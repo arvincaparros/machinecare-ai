@@ -2,17 +2,22 @@ import { useCallback, useMemo, useRef, useState } from "react";
 
 import { ChatThread } from "./components/ChatThread";
 import { Composer } from "./components/Composer";
+import { DropOverlay } from "./components/DropOverlay";
 import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
 import { SourcesPanel } from "./components/SourcesPanel";
 import { useApiHealth } from "./hooks/useApiHealth";
 import { useAsk } from "./hooks/useAsk";
 import { useAttachments } from "./hooks/useAttachments";
+import { useFileDrop } from "./hooks/useFileDrop";
 
 export default function App() {
   const health = useApiHealth();
   const chat = useAsk({ onNetworkFailure: health.markOffline });
   const selection = useAttachments();
+  // Dropped documents go through the Attach button's validation, and are
+  // ignored while an answer is in flight, exactly like the button itself.
+  const dropZone = useFileDrop(selection.add, { enabled: !chat.isPending });
 
   const [draft, setDraft] = useState("");
   const [machine, setMachine] = useState("");
@@ -82,7 +87,11 @@ export default function App() {
       />
 
       <main className="workspace">
-        <section className="panel" aria-labelledby="panel-title">
+        <section
+          className="panel"
+          aria-labelledby="panel-title"
+          {...dropZone.dragHandlers}
+        >
           <div className="panel__head">
             <div>
               <h2 id="panel-title">Incident assistant</h2>
@@ -113,6 +122,8 @@ export default function App() {
             pending={chat.isPending}
             inputRef={inputRef}
           />
+
+          {dropZone.isDragging && <DropOverlay />}
         </section>
 
         <aside className="rail" aria-label="Sources">

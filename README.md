@@ -76,6 +76,10 @@ and a Groq key in `.env`; `/health` reports process liveness only.
 | `machine` | optional filter, up to 50 characters |
 | `files` | 1–3 files, ≤ 10 MB each, `.pdf`, `.txt`, `.csv`, `.docx`, `.xlsx` or `.xls` |
 
+In the UI, files are attached with the Attach button or by dragging them onto
+the chat panel; both paths run the same client-side validation and limits,
+and dropping a file never submits the question.
+
 The response is the `/api/v1/ask` payload plus a `documents` array
 (`filename`, `characters`, `truncated`). Uploads are validated by extension,
 declared content type and file signature, then extracted in memory with

@@ -58,28 +58,6 @@ export function Composer({
         }
       }}
     >
-      <label className="composer__question">
-        <span className="sr-only">Your question</span>
-        <textarea
-          ref={inputRef}
-          className="composer__textarea"
-          value={value}
-          onChange={(event) => onChange(event.target.value)}
-          onKeyDown={(event) => {
-            if (event.key === "Enter" && !event.shiftKey) {
-              event.preventDefault();
-              if (canSubmit) {
-                onSubmit();
-              }
-            }
-          }}
-          placeholder="Describe the fault or ask about a past incident…"
-          rows={2}
-          maxLength={MAX_QUESTION_LENGTH}
-          disabled={pending}
-        />
-      </label>
-
       {attachments.length > 0 && (
         <ul className="attach-list" aria-label="Attached documents">
           {attachments.map((attachment) => (
@@ -152,6 +130,28 @@ export function Composer({
           </button>
         </div>
       )}
+
+      <label className="composer__question">
+        <span className="sr-only">Your question</span>
+        <textarea
+          ref={inputRef}
+          className="composer__textarea"
+          value={value}
+          onChange={(event) => onChange(event.target.value)}
+          onKeyDown={(event) => {
+            if (event.key === "Enter" && !event.shiftKey) {
+              event.preventDefault();
+              if (canSubmit) {
+                onSubmit();
+              }
+            }
+          }}
+          placeholder="Describe the fault or ask about a past incident…"
+          rows={2}
+          maxLength={MAX_QUESTION_LENGTH}
+          disabled={pending}
+        />
+      </label>
 
       <div className="composer__row">
         <input

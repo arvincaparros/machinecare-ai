@@ -498,6 +498,7 @@ button {
    ------------------------------------------------------------ */
 
 .panel {
+  position: relative;
   display: flex;
   flex-direction: column;
   min-width: 0;
@@ -507,6 +508,69 @@ button {
   border-radius: var(--radius-xl);
   box-shadow: var(--shadow-panel);
   overflow: hidden;
+}
+
+/* Drag-and-drop: the panel is the drop zone, so the hint covers the thread and
+   the composer. pointer-events keeps the panel receiving its own drag events. */
+.drop-zone {
+  position: absolute;
+  inset: 7px;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 18px;
+  background: radial-gradient(
+      118% 88% at 50% 0%,
+      rgba(255, 122, 24, 0.17),
+      transparent 68%
+    ),
+    rgba(11, 12, 15, 0.84);
+  border: 1.5px dashed var(--orange-border);
+  border-radius: var(--radius-lg);
+  box-shadow: inset 0 0 0 1px rgba(255, 122, 24, 0.08);
+  backdrop-filter: blur(3px) saturate(125%);
+  -webkit-backdrop-filter: blur(3px) saturate(125%);
+  pointer-events: none;
+  animation: drop-zone-in 0.16s ease-out both;
+}
+
+.drop-zone__card {
+  display: grid;
+  justify-items: center;
+  gap: 7px;
+  max-width: min(100%, 360px);
+  text-align: center;
+}
+
+.drop-zone__icon {
+  display: grid;
+  place-items: center;
+  width: 44px;
+  height: 44px;
+  margin-bottom: 2px;
+  color: var(--orange);
+  background: rgba(255, 122, 24, 0.12);
+  border: 1px solid var(--orange-border);
+  border-radius: 12px;
+  box-shadow: 0 8px 20px -12px rgba(255, 122, 24, 0.8);
+}
+
+.drop-zone__icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.drop-zone__title {
+  color: var(--text);
+  font-size: 0.95rem;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+}
+
+.drop-zone__hint {
+  color: var(--text-dim);
+  font-size: 0.75rem;
+  line-height: 1.45;
 }
 
 .panel__head {
@@ -1409,6 +1473,10 @@ button {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
+  /* The chips sit above the textarea; the composer grid gap is the only
+     spacing, so the list's own margins and list indent are cleared. */
+  margin: 0;
+  padding: 0;
   list-style: none;
 }
 
@@ -1826,6 +1894,17 @@ button {
 @keyframes spin {
   to {
     transform: rotate(360deg);
+  }
+}
+
+@keyframes drop-zone-in {
+  from {
+    opacity: 0;
+    transform: scale(0.994);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
   }
 }
 
