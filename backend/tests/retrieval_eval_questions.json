@@ -1,0 +1,162 @@
+{
+  "version": 1,
+  "description": "Deterministic retrieval evaluation questions for MachineCare AI Starter. Every expected incident ID comes from data/incidents.json.",
+  "questions": [
+    {
+      "id": "aoi-camera-calibration",
+      "category": "machine-specific",
+      "question": "AOI camera inspection is inaccurate after calibration",
+      "machine": "AOI-01",
+      "expected_incident_ids": [
+        "DT-2026-001",
+        "DT-2026-025"
+      ],
+      "evidence": "AOI-01 incidents whose Cause is 'Camera calibration failed'."
+    },
+    {
+      "id": "aoi-camera-drift-symptom",
+      "category": "paraphrased-symptom",
+      "question": "The AOI camera keeps moving over time, so inspection results are no longer accurate",
+      "machine": "AOI-01",
+      "expected_incident_ids": [
+        "DT-2026-001",
+        "DT-2026-025"
+      ],
+      "evidence": "AOI-01 incidents whose Root Cause is camera drift."
+    },
+    {
+      "id": "camera-drift-extended-operation",
+      "category": "root-cause",
+      "question": "Why did the camera drift after extended operation?",
+      "machine": null,
+      "expected_incident_ids": [
+        "DT-2026-001"
+      ],
+      "evidence": "Only DT-2026-001 records Root Cause 'Camera drift after extended operation'."
+    },
+    {
+      "id": "camera-recalibration-verified",
+      "category": "corrective-action",
+      "question": "Which incident recorded recalibrating the camera and verifying the inspection?",
+      "machine": null,
+      "expected_incident_ids": [
+        "DT-2026-001"
+      ],
+      "evidence": "Only DT-2026-001 records Action Taken 'Recalibrated camera and verified inspection'."
+    },
+    {
+      "id": "sensor-failure-preventive",
+      "category": "preventive-action",
+      "question": "What preventive action is associated with sensor failure incidents?",
+      "machine": null,
+      "expected_incident_ids": [
+        "DT-2026-012",
+        "DT-2026-024",
+        "DT-2026-036",
+        "DT-2026-048",
+        "DT-2026-060",
+        "DT-2026-072",
+        "DT-2026-084",
+        "DT-2026-096"
+      ],
+      "evidence": "Incidents whose Cause is 'Sensor failure'; all record Preventive Action 'Replacement schedule'."
+    },
+    {
+      "id": "conveyor-belt-slipped-conveyor",
+      "category": "multiple-incidents",
+      "question": "The conveyor belt keeps slipping during production",
+      "machine": "Conveyor",
+      "expected_incident_ids": [
+        "DT-2026-006",
+        "DT-2026-030",
+        "DT-2026-042"
+      ],
+      "evidence": "Conveyor machine incidents whose Cause is 'Conveyor belt slipped'."
+    },
+    {
+      "id": "conveyor-belt-slipped-all",
+      "category": "multiple-incidents",
+      "question": "Conveyor belt slipped on the production line",
+      "machine": null,
+      "expected_incident_ids": [
+        "DT-2026-006",
+        "DT-2026-018",
+        "DT-2026-030",
+        "DT-2026-042",
+        "DT-2026-054",
+        "DT-2026-066",
+        "DT-2026-078",
+        "DT-2026-090"
+      ],
+      "evidence": "All incidents whose Cause is 'Conveyor belt slipped'."
+    },
+    {
+      "id": "pick-place-vacuum-nozzle",
+      "category": "paraphrased-symptom",
+      "question": "The pick and place head is losing vacuum because the nozzle is blocked",
+      "machine": "Pick & Place-01",
+      "expected_incident_ids": [
+        "DT-2026-023"
+      ],
+      "evidence": "The only Pick & Place-01 incident with Cause 'Vacuum loss' and Root Cause 'Nozzle clog'."
+    },
+    {
+      "id": "communication-timeout-root-cause",
+      "category": "root-cause",
+      "question": "What is the root cause of the communication timeouts?",
+      "machine": null,
+      "expected_incident_ids": [
+        "DT-2026-007",
+        "DT-2026-019",
+        "DT-2026-031",
+        "DT-2026-043",
+        "DT-2026-055",
+        "DT-2026-067",
+        "DT-2026-079",
+        "DT-2026-091"
+      ],
+      "evidence": "Incidents whose Cause is 'Communication timeout' or 'Fixture communication timeout'; all record a damaged cable as Root Cause."
+    },
+    {
+      "id": "power-interruption-action",
+      "category": "corrective-action",
+      "question": "What corrective action was recorded for power interruptions?",
+      "machine": null,
+      "expected_incident_ids": [
+        "DT-2026-010",
+        "DT-2026-022",
+        "DT-2026-034",
+        "DT-2026-046",
+        "DT-2026-058",
+        "DT-2026-070",
+        "DT-2026-082",
+        "DT-2026-094"
+      ],
+      "evidence": "Incidents whose Cause is 'Power interruption' or 'Unexpected power interruption'; all record restarting the equipment."
+    },
+    {
+      "id": "no-evidence-forklift",
+      "category": "no-evidence",
+      "question": "Forklift battery is overheating during charging",
+      "machine": null,
+      "expected_incident_ids": [],
+      "evidence": "No forklift or battery-charging records exist in the seed data."
+    },
+    {
+      "id": "no-evidence-hydraulic-press",
+      "category": "no-evidence",
+      "question": "Hydraulic press is losing oil pressure",
+      "machine": null,
+      "expected_incident_ids": [],
+      "evidence": "No hydraulic press records exist in the seed data."
+    },
+    {
+      "id": "no-evidence-aoi-burning-smell",
+      "category": "no-evidence",
+      "question": "AOI-01 is emitting a burning smell during inspection",
+      "machine": "AOI-01",
+      "expected_incident_ids": [],
+      "evidence": "AOI-01 has incident records, but none describe a burning smell or overheating."
+    }
+  ]
+}

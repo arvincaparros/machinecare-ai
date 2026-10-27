@@ -1,0 +1,28 @@
+
+services:
+  postgres:
+    image: postgres:17
+    container_name: machinecare-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_DB: machinecare_db
+      POSTGRES_USER: machinecare_user
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+
+    ports:
+      - "127.0.0.1:5434:5432"
+
+    volumes:
+      - machinecare_pgdata:/var/lib/postgresql/data
+
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - pg_isready -U machinecare_user -d machinecare_db
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  machinecare_pgdata:

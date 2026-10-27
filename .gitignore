@@ -1,0 +1,42 @@
+
+# Environment variables / Secrets
+.env
+.env.*
+!.env.example
+
+# Python virtual environment
+.venv/
+venv/
+
+# Python cache
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+
+# ChromaDB generated vector database
+backend/data/chroma_db/
+
+# Local database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Node / frontend build output
+node_modules/
+dist/
+.vite/
+
+# IDE / Editor
+.vscode/
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+
+#Qoder repo wiki
+.qoder/
