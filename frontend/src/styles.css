@@ -304,7 +304,8 @@ button {
    Hero
    ------------------------------------------------------------ */
 
-/* Compact banner: illustration and copy on one row, suggestions on the next. */
+/* Hero: illustration and copy on the first row, suggested prompts on the
+   second until the conversation starts. */
 .hero {
   display: grid;
   grid-template-columns: clamp(104px, 10vw, 158px) minmax(0, 1fr);
@@ -325,6 +326,13 @@ button {
   border: 1px solid var(--border);
   border-radius: var(--radius-lg);
   box-shadow: var(--shadow-card);
+}
+
+/* Prompts retire with the first question, so their row collapses instead of
+   leaving a gap. The compact modifier below takes over once the banner
+   itself shrinks. */
+.hero--no-suggestions {
+  grid-template-areas: "art copy";
 }
 
 .hero__copy {
@@ -466,13 +474,11 @@ button {
   filter: drop-shadow(0 12px 26px rgba(0, 0, 0, 0.5));
 }
 
-/* Collapsed banner once the conversation starts: no art, no lead copy. */
+/* Collapsed banner once the conversation starts: no art, no lead copy and no
+   prompts, leaving a single slim heading row. */
 .hero--compact {
   grid-template-columns: minmax(0, 1fr);
-  grid-template-areas:
-    "copy"
-    "suggestions";
-  gap: 9px;
+  grid-template-areas: "copy";
   padding: 10px 16px;
 }
 
@@ -485,12 +491,6 @@ button {
 .hero--compact h1 {
   font-size: 1.06rem;
   letter-spacing: -0.018em;
-}
-
-.hero--compact .chip {
-  min-height: 32px;
-  padding: 6px 11px;
-  font-size: 0.745rem;
 }
 
 /* ------------------------------------------------------------
@@ -1637,6 +1637,11 @@ button {
       "suggestions";
   }
 
+  /* Prompts are gone at this width too, so no empty second row. */
+  .hero--no-suggestions {
+    grid-template-areas: "copy";
+  }
+
   .hero__art {
     display: none;
   }
@@ -1751,11 +1756,6 @@ button {
 
   .hero h1 {
     font-size: 1.3rem;
-  }
-
-  .hero--compact .chip {
-    min-height: 30px;
-    padding: 6px 10px;
   }
 
   .hero .chip {

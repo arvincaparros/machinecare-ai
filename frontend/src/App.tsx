@@ -18,6 +18,11 @@ export default function App() {
   const [machine, setMachine] = useState("");
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
+  // The transcript is the source of truth for the hero: as soon as a turn
+  // exists a conversation has started, and the suggested prompts retire for
+  // the rest of it. Typing or attaching files alone does not start one.
+  const hasStartedConversation = chat.turns.length > 0;
+
   // The rail mirrors the most recent completed answer.
   const latestAnswer = useMemo(() => {
     for (let index = chat.turns.length - 1; index >= 0; index -= 1) {
@@ -31,27 +36,38 @@ export default function App() {
     return null;
   }, [chat.turns]);
 
-  const handlePick = useCallback((question: string) => {
-    setDraft(question);
-    inputRef.current?.focus();
-    inputRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
-  }, []);
+  const submitQuestion = useCallback(
+    (question: string) => {
+      const trimmed = question.trim();
+
+      if (!trimmed || chat.isPending) {
+        return;
+      }
+
+      chat.ask(
+        trimmed,
+        machine.trim() || null,
+        selection.attachments.map((attachment) => attachment.file),
+      );
+      setDraft("");
+      selection.clear();
+    },
+    [chat, machine, selection],
+  );
+
+  // A suggested prompt is a real submission, not a draft; the composer keeps
+  // focus so follow-up questions are one keystroke away.
+  const handlePick = useCallback(
+    (question: string) => {
+      submitQuestion(question);
+      inputRef.current?.focus();
+    },
+    [submitQuestion],
+  );
 
   const handleSubmit = useCallback(() => {
-    const question = draft.trim();
-
-    if (!question || chat.isPending) {
-      return;
-    }
-
-    chat.ask(
-      question,
-      machine.trim() || null,
-      selection.attachments.map((attachment) => attachment.file),
-    );
-    setDraft("");
-    selection.clear();
-  }, [chat, draft, machine, selection]);
+    submitQuestion(draft);
+  }, [draft, submitQuestion]);
 
   return (
     <div className="shell">
@@ -59,7 +75,11 @@ export default function App() {
 
       <Header status={health.status} />
 
-      <Hero compact={chat.turns.length > 0} onPick={handlePick} />
+      <Hero
+        compact={hasStartedConversation}
+        showSuggestions={!hasStartedConversation}
+        onPick={handlePick}
+      />
 
       <main className="workspace">
         <section className="panel" aria-labelledby="panel-title">

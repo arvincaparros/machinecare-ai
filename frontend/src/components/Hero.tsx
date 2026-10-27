@@ -11,12 +11,16 @@ interface HeroProps {
   onPick: (question: string) => void;
   /** Collapses to a slim banner once a conversation has started. */
   compact: boolean;
+  /** Suggested prompts only belong to the state before the first question. */
+  showSuggestions: boolean;
 }
 
-export function Hero({ onPick, compact }: HeroProps) {
+export function Hero({ onPick, compact, showSuggestions }: HeroProps) {
   return (
     <section
-      className={`hero${compact ? " hero--compact" : ""}`}
+      className={`hero${compact ? " hero--compact" : ""}${
+        showSuggestions ? "" : " hero--no-suggestions"
+      }`}
       aria-labelledby="hero-title"
     >
       <div className="hero__art" aria-hidden="true">
@@ -34,18 +38,20 @@ export function Hero({ onPick, compact }: HeroProps) {
         </p>
       </div>
 
-      <div className="hero__suggestions" aria-label="Suggested questions">
-        {SUGGESTIONS.map((question) => (
-          <button
-            key={question}
-            type="button"
-            className="chip"
-            onClick={() => onPick(question)}
-          >
-            {question}
-          </button>
-        ))}
-      </div>
+      {showSuggestions && (
+        <div className="hero__suggestions" aria-label="Suggested questions">
+          {SUGGESTIONS.map((question) => (
+            <button
+              key={question}
+              type="button"
+              className="chip"
+              onClick={() => onPick(question)}
+            >
+              {question}
+            </button>
+          ))}
+        </div>
+      )}
     </section>
   );
 }
