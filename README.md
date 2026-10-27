@@ -1,135 +1,622 @@
-# MachineCare AI — Phase 1 Starter
+# MachineCare AI
 
-**Goal:** Import 100 historical downtime incidents from the supplied workbook into a queryable database. This is a **database API**, not RAG yet.
+MachineCare AI answers maintenance questions from historical downtime incidents and cites the
+records behind every claim. A React chat UI talks to a FastAPI retrieval-augmented generation
+(RAG) service: PostgreSQL holds the authoritative incident records, ChromaDB narrows candidates
+by semantic similarity, and Groq generates the answer from the retrieved evidence only.
 
-## Repository layout
+This is a working local development stack, not a hardened production service. There is no
+authentication, the conversation lives only in the browser tab, and attachments are per-question
+context rather than an indexed document library. See
+[section 14](#14-current-limitations-and-planned-features).
+
+## 1. Project overview and current capabilities
+
+What works today:
+
+- **Grounded answers** over the 100 closed downtime incidents in `backend/data/incidents.json`
+  (16 machine codes, all with resolutions).
+- **Semantic retrieval** with ChromaDB cosine search (top 5) and a distance gate of `0.50`;
+  every match is re-read from PostgreSQL before it can support an answer.
+- **Citation enforcement**: incident IDs in the generated text are extracted, compared with the
+  retrieved records, and unsupported IDs are reported in the response and flagged in the UI.
+- **Optional machine filter** (exact machine code such as `AOI-01`) applied to both retrieval
+  and the PostgreSQL reload.
+- **Ad-hoc attachments** (PDF, TXT, CSV, DOCX, XLSX, XLS) used as extra context for a single
+  question, chosen with the Attach button or dragged onto the chat panel.
+- **Chat UI** with suggested prompts, follow-up questions, Markdown answers, a sources rail,
+  error retry, and a liveness indicator.
+- **Two FastAPI applications**: the RAG API the frontend uses, plus the standalone Phase 1
+  database-only record API for inspecting the original incident table.
+
+What does **not** exist yet: incident CRUD or import endpoints, indexed SOP/document management,
+permissions or authentication, MCP tools, streaming, and persisted chat history. Those are listed
+as planned work in section 14.
+
+## 2. Architecture and data flow
+
 ```
-backend/      Python backend: FastAPI apps, RAG services, models,
-              migrations, tests, seed data and the ChromaDB index
-frontend/     React + TypeScript + Vite chat UI for the RAG API
-compose.yaml  PostgreSQL 17 for local development
-.env          Local secrets, git-ignored, read from the repository root
-.venv/        Local virtual environment, git-ignored
+Browser (React 19 + Vite dev server, http://localhost:5173)
+   |  same-origin /api/v1/ask, /api/v1/ask-with-files, /health
+   |  (Vite dev proxy forwards to http://127.0.0.1:8001)
+   v
+RAG API (FastAPI, app.api.main:app, port 8001)
+   |  1. validate question and optional machine code
+   |  2. read attachments into memory and extract text (uploads only)
+   v
+ChromaDB (backend/data/chroma_db, cosine, all-MiniLM-L6-v2 ONNX embeddings)
+   |  top-5 incident IDs + distances, optional exact machine metadata filter
+   v
+distance gate: keep matches with distance <= 0.50
+   v
+PostgreSQL 17 (machines, downtime_incidents, downtime_resolutions)
+   |  reload each match; keep only Closed records with machine + resolution
+   v
+Groq chat completion (default openai/gpt-oss-20b, temperature 0.2)
+   v
+citation validation + disclosure notes -> JSON response -> chat UI
 ```
 
-## Requirements
-- Python 3.11+ and VS Code
-- Node.js 20+ and npm (frontend only)
-- Docker Desktop (optional, only for PostgreSQL)
+Key properties of the pipeline:
 
-## Windows PowerShell setup
+- **ChromaDB is a candidate index, not the source of truth.** It returns incident IDs; the evidence
+  sent to the model is rebuilt from the current PostgreSQL rows on every question.
+- **No evidence means no LLM call** for the question-only endpoint. The API returns a fixed
+  "couldn't find a sufficiently relevant resolved downtime incident" answer with empty sources.
+- **Uploads never become evidence records.** Attachment text is added to the prompt as untrusted
+  user data; it is not written to PostgreSQL, ChromaDB or disk, and it cannot be cited as history.
+
+## 3. Repository layout
+
+```
+machinecare-ai-starter/
+├─ .env                      Local secrets (git-ignored, read from the repository root)
+├─ compose.yaml              PostgreSQL 17 for local development
+├─ backend/
+│  ├─ app/
+│  │  ├─ api/
+│  │  │  ├─ main.py          RAG FastAPI app (used by the frontend)
+│  │  │  └─ schemas.py       Pydantic request/response models and limits
+│  │  ├─ main.py             Phase 1 database-only FastAPI app (separate)
+│  │  ├─ db/database.py      Engine and session factory from DB_* variables
+│  │  ├─ models/             Machine, DowntimeIncident, DowntimeResolution
+│  │  ├─ repositories/       Queries for closed incidents and lookups by ID
+│  │  └─ services/
+│  │     ├─ rag_service.py             Retrieval, prompt building, citation checks
+│  │     ├─ vector_store_service.py    ChromaDB indexing and search
+│  │     ├─ groq_service.py            Groq chat completion call
+│  │     ├─ document_extraction.py     In-memory attachment validation and text extraction
+│  │     └─ incident_retrieval_service.py  JSON loading and keyword search helper
+│  ├─ migrations/            Alembic environment and revisions
+│  ├─ tests/                 pytest suite, fixtures, retrieval/rerank evaluations
+│  ├─ data/
+│  │  ├─ incidents.json      100 source records (tracked)
+│  │  └─ chroma_db/          Persistent vector index (git-ignored)
+│  ├─ alembic.ini            Alembic config (script_location = migrations)
+│  ├─ pytest.ini             pythonpath = ., testpaths = tests
+│  ├─ requirements.txt       Runtime dependencies
+│  ├─ requirements-dev.txt   Test dependencies
+│  ├─ seed_database.py       PostgreSQL seeding from incidents.json
+│  ├─ index_incidents.py     ChromaDB indexing from PostgreSQL
+│  └─ test_*.py              Manual smoke scripts (not collected by pytest)
+└─ frontend/
+   ├─ src/api/client.ts      Fetch layer with timeouts and error mapping
+   ├─ src/components/        Header, hero, chat thread, answer card, sources, composer, overlay
+   ├─ src/hooks/             useAsk, useApiHealth, useAttachments, useFileDrop
+   ├─ src/lib/files.ts       Client-side attachment validation
+   ├─ src/types.ts           API types and shared limit constants
+   ├─ src/styles.css         Dark charcoal/orange theme
+   └─ vite.config.ts         Dev server on 5173, proxy to 127.0.0.1:8001
+```
+
+`backend/machinecare.db` may appear after starting the Phase 1 app; it is the default SQLite store
+for that application and is git-ignored.
+
+## 4. Technology stack
+
+| Layer | Technology |
+| --- | --- |
+| Backend API | FastAPI, uvicorn (`uvicorn[standard]`), Pydantic 2 |
+| Persistence | PostgreSQL 17, SQLAlchemy 2.1 ORM, psycopg 3 (`postgresql+psycopg`) |
+| Migrations | Alembic (one revision, `6041a26eff31`) |
+| Vector store | ChromaDB 1.5, persistent client, cosine space, default ONNX all-MiniLM-L6-v2 embeddings |
+| Generation | Groq chat completions, default model `openai/gpt-oss-20b`, temperature `0.2` |
+| Text extraction | pypdf (PDF), openpyxl (`.xlsx`), xlrd (`.xls`), standard library zipfile/XML (DOCX), standard library text/CSV |
+| Frontend | React 19, TypeScript 5.8, Vite 7, react-markdown 10 with remark-gfm |
+| Tests | pytest with FastAPI `TestClient`, in-memory SQLite fixtures |
+| Local infrastructure | Docker Compose (PostgreSQL only; the apps run on the host) |
+
+## 5. Prerequisites and environment configuration
+
+Prerequisites:
+
+- Windows with PowerShell (all commands below are PowerShell, so use `;` rather than `&&`).
+- Python 3.11 or newer, verified with 3.12.10. Prefer a version that has wheels for every
+  dependency (the examples below pin 3.12 through the Windows launcher).
+- Node.js 20.19+ or 22.12+ (Vite 7 requirement; 24.x is what this environment uses) with npm.
+- Docker Desktop for PostgreSQL, or another PostgreSQL 17 instance you configure yourself.
+- A Groq API key and internet access. The key is required for answering; the first ChromaDB
+  embedding call also downloads the ONNX MiniLM model (~80 MB) once.
+
+Create `.env` in the repository root with these variables. It is git-ignored and no template is
+committed, so create it by hand and never commit it:
+
+```dotenv
+# PostgreSQL: compose.yaml requires POSTGRES_PASSWORD; the backend reads DB_*
+POSTGRES_PASSWORD=replace-with-a-local-password
+DB_USER=machinecare_user
+DB_PASSWORD=replace-with-the-same-local-password
+DB_HOST=127.0.0.1
+DB_PORT=5434
+DB_NAME=machinecare_db
+
+# Groq: required for answer generation
+GROQ_API_KEY=replace-with-your-groq-api-key
+GROQ_MODEL=openai/gpt-oss-20b
+```
+
+Notes:
+
+- `compose.yaml` fixes the database (`machinecare_db`) and user (`machinecare_user`) and exposes
+  it on `127.0.0.1:5434`. `DB_PASSWORD` must match `POSTGRES_PASSWORD`, because the backend
+  connects with `DB_USER`/`DB_PASSWORD` and Docker initializes that user with `POSTGRES_PASSWORD`.
+- `DB_USER`, `DB_PASSWORD` and `DB_NAME` are required; `app/db/database.py` raises `KeyError` at
+  import time when they are missing. `DB_HOST` defaults to `127.0.0.1` and `DB_PORT` to `5434`.
+- `GROQ_MODEL` is optional; `openai/gpt-oss-20b` is the default in `groq_service.py`.
+- `app/main.py` (the Phase 1 app) optionally reads `DATABASE_URL`. The RAG API never reads it.
+- pytest does not need a running database, a vector index or a Groq key: `tests/conftest.py` pins
+  dummy `DB_*` values, and tests use in-memory SQLite with mocked retrieval and generation.
+
+## 6. Local setup and startup instructions
+
+Run the setup from the repository root:
+
 ```powershell
-cd machinecare-ai-starter
-py -3 -m venv .venv
+cd C:\Projects\machinecare-ai-starter
+py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r backend\requirements.txt
 python -m pip install -r backend\requirements-dev.txt
-cd backend
-python -m uvicorn app.main:app --reload
 ```
 
-If PowerShell blocks activation, install from the repository root with
-`.\.venv\Scripts\python.exe -m pip install -r backend\requirements.txt`, then
-`cd backend` and use `..\.venv\Scripts\python.exe -m uvicorn app.main:app --reload`.
+If Python 3.12 is not installed, substitute the launcher version you have available and confirm
+that every dependency installs with wheels before continuing.
 
-## Backend commands (run from `backend/`)
-| Task | Command |
-| --- | --- |
-| Phase 1 record API | `python -m uvicorn app.main:app --reload` |
-| RAG API (`/health`, `/api/v1/ask`, `/api/v1/ask-with-files`) | `python -m uvicorn app.api.main:app --reload` |
-| Full test suite | `python -m pytest` |
-| Retrieval evaluation report | `python -m tests.retrieval_eval` |
-| Seed PostgreSQL from JSON | `python seed_database.py` |
-| Index incidents into ChromaDB | `python index_incidents.py` |
-| Apply migrations | `python -m alembic upgrade head` |
-| Manual smoke scripts | `python test_rag.py`, `python test_repository.py`, … |
+If PowerShell blocks activation, skip it and call the interpreter directly
+(`.\.venv\Scripts\python.exe`) as shown in the commands below.
 
-Start PostgreSQL from the repository root with `docker compose up -d`; the
-compose file reads its password from the root `.env`. Alembic, pytest and the
-scripts resolve `app` as a package relative to `backend/`, so always run them
-from inside that directory.
-
-## Frontend (run from `frontend/`)
-The UI calls the same-origin paths `/api/v1/ask`, `/api/v1/ask-with-files` and
-`/health`; Vite proxies them to the RAG API on port **8001**, so start that app
-first.
+Start PostgreSQL:
 
 ```powershell
-# terminal 1 — from backend/
-..\.venv\Scripts\python.exe -m uvicorn app.api.main:app --port 8001
-
-# terminal 2 — from frontend/
-npm install
-npm run dev      # http://localhost:5173
-npm run build    # type-check + production bundle in dist/
+cd C:\Projects\machinecare-ai-starter
+docker compose up -d
+docker compose ps
 ```
 
-Answering a question needs PostgreSQL, the ChromaDB index in `backend/data/`
-and a Groq key in `.env`; `/health` reports process liveness only.
+Apply the schema, seed PostgreSQL from the JSON records, and build the vector index:
 
-## Document attachments
-`POST /api/v1/ask-with-files` accepts multipart form data instead of JSON:
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+..\.venv\Scripts\python.exe seed_database.py
+..\.venv\Scripts\python.exe index_incidents.py
+```
 
-| Field | Rules |
+Start the RAG API on port **8001** (the port the frontend proxies to):
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe -m uvicorn app.api.main:app --reload --port 8001
+```
+
+Start the frontend in a second terminal:
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\frontend
+npm install
+npm run dev
+```
+
+Open http://localhost:5173. The header pill reads "RAG API connected" when `GET /health` (proxied
+to the RAG API) answers; it only proves the API process is running, not that PostgreSQL, ChromaDB
+or Groq are ready.
+
+Answering a question requires:
+
+1. a running RAG API on port 8001,
+2. PostgreSQL with the seeded records (`seed_database.py`),
+3. a non-empty ChromaDB index built from those records (`index_incidents.py`),
+4. a valid `GROQ_API_KEY` with network access.
+
+## 7. Backend API applications and endpoints
+
+Both applications are FastAPI apps, but they are started separately and read different configuration:
+the RAG API uses the `DB_*` variables, while the Phase 1 app uses `DATABASE_URL` or SQLite.
+
+| Application | Module | Port | Used by the frontend | Purpose |
+| --- | --- | --- | --- | --- |
+| RAG API | `app.api.main:app` | 8001 (`--port 8001`) | Yes | Question answering over PostgreSQL + ChromaDB + Groq, with attachments |
+| Phase 1 record API | `app.main:app` | 8000 (uvicorn default) | No | Read-only inspection of the original incident table |
+
+### RAG API (`backend/app/api/main.py`)
+
+| Method | Path | Request | Response |
+| --- | --- | --- | --- |
+| GET | `/health` | none | `{"status": "ok"}` (process liveness only) |
+| POST | `/api/v1/ask` | JSON `{"question": str, "machine": str \| null}` | `AskResponse` |
+| POST | `/api/v1/ask-with-files` | multipart `question`, optional `machine`, 1–3 `files` | `AskWithFilesResponse` |
+| GET | `/docs`, `/openapi.json` | none | Interactive docs and schema |
+
+`AskResponse` fields:
+
+- `answer` — generated Markdown, or the fixed no-evidence message.
+- `sources` — `[{ "incident_id", "machine", "distance" }]` for the records used as evidence
+  (`distance` rounded to four decimals).
+- `cited_incident_ids` — IDs mentioned in the answer that exist in the evidence set.
+- `unsupported_citations` — IDs mentioned in the answer that are not in the evidence set.
+- `documents` — only on `/api/v1/ask-with-files`:
+  `[{ "filename", "characters", "truncated" }]`.
+
+Limits enforced by the API layer: question 1–2000 characters after trimming, machine at most 50
+characters, blank machine treated as "no filter".
+
+Example (PowerShell):
+
+```powershell
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8001/api/v1/ask `
+  -ContentType "application/json" `
+  -Body '{"question":"AOI camera inspection is inaccurate","machine":"AOI-01"}'
+
+curl.exe -s -X POST http://127.0.0.1:8001/api/v1/ask-with-files `
+  -F "question=AOI camera is inaccurate" `
+  -F "machine=AOI-01" `
+  -F "files=@C:\path\to\report.pdf"
+```
+
+Error responses:
+
+| Status | Cause |
 | --- | --- |
-| `question` | required, 1–2000 characters after trimming |
-| `machine` | optional filter, up to 50 characters |
-| `files` | 1–3 files, ≤ 10 MB each, `.pdf`, `.txt`, `.csv`, `.docx`, `.xlsx` or `.xls` |
+| 400 | `/api/v1/ask-with-files` with no files, or more than 3 files |
+| 413 | an upload exceeds 10 MB (detected while reading) or an archive expands too far |
+| 415 | unsupported extension, declared content type mismatch, invalid file signature, binary TXT/CSV |
+| 422 | blank question; empty or unreadable document; unsupported encoding; encrypted/mislabeled workbook; a workbook with no cell values |
+| 500 | retrieval or generation failure; the client sees a generic message and the traceback is logged server-side |
 
-In the UI, files are attached with the Attach button or by dragging them onto
-the chat panel; both paths run the same client-side validation and limits,
-and dropping a file never submits the question.
+### Phase 1 record API (`backend/app/main.py`)
 
-The response is the `/api/v1/ask` payload plus a `documents` array
-(`filename`, `characters`, `truncated`). Uploads are validated by extension,
-declared content type and file signature, then extracted in memory with
-`pypdf` (PDF), `openpyxl` (`.xlsx`), `xlrd` (legacy `.xls`) and the standard
-library (TXT, CSV, DOCX). Nothing is written to disk, PostgreSQL or ChromaDB,
-and extracted text is capped at 20,000 characters per file (12,000 characters
-across all attachments in one prompt). Document text is treated as untrusted
-data: instruction-like lines are replaced before the prompt is built, and the
-model is told never to present a document as verified.
+This application predates the RAG pipeline and is independent of the Alembic schema. It declares
+its own `incidents` table (flat columns), creates it with `Base.metadata.create_all` and seeds it
+from `backend/data/incidents.json` on startup, skipping incident IDs that already exist. It uses
+`DATABASE_URL` when set, otherwise a SQLite file at `backend/machinecare.db`.
 
-Workbooks are opened read-only and never executed: no macros, no formula
-calculation and no external links. Each worksheet becomes a `### Worksheet:`
-block with `Row N:` lines, in workbook order. Hidden and
-very-hidden worksheets are included and labelled `[hidden]`; hidden rows and
-columns cannot be distinguished in read-only mode, so their values are
-included like any other cell. Formula cells use the cached result stored in the
-file, and a formula without a cached result is written as
-`[formula without cached value]`. Limits per workbook: 10 worksheets, 500 rows
-and 20 columns per worksheet, 4,000 populated cells, 400 characters per cell.
-Truncation is marked inline (`[worksheet truncated …]`, `[… extracted text
-limit reached …]`) and reported as `truncated: true` in the response; a
-workbook with no cell values is rejected with `422`.
+| Method | Path | Notes |
+| --- | --- | --- |
+| GET | `/health` | `{"status": "ok", "phase": "database-foundation"}` |
+| GET | `/incidents` | Query `machine` (case-insensitive partial match), `status` (exact), `limit` 1–100 (default 20); ordered by date then ID |
+| GET | `/incidents/count` | Row count of this application's own table (100 after the first seed) |
+| GET | `/incidents/{incident_id}` | Exact record or 404 |
 
-## Verify
-- http://127.0.0.1:8001/docs — interactive API documentation
-- http://127.0.0.1:8001/health — RAG API status
-- http://127.0.0.1:8001/api/v1/ask — RAG question endpoint (POST, JSON)
-- http://127.0.0.1:8001/api/v1/ask-with-files — question plus documents (POST, multipart)
-- http://127.0.0.1:8000/incidents/count — expected count 100
-- http://127.0.0.1:8000/incidents/DT-2026-001 — exact incident
-- http://127.0.0.1:8000/incidents?machine=AOI — filter by machine
-- http://localhost:5173 — frontend dev server (needs the RAG API on :8001)
+It has no create, update or delete endpoints, no RAG, and it is **not** called by the frontend.
 
-## Architecture decisions
-- **SQLAlchemy ORM**: start with local SQLite (`backend/machinecare.db`) to eliminate initial setup; migrate to PostgreSQL using `DATABASE_URL` and an appropriate PostgreSQL driver later.
-- **Source of truth**: the 100 incidents are preserved in `backend/data/incidents.json` and loaded idempotently on startup.
-- **No AI yet**: RAG index, document ingestion, permissions and LLM come in later steps. Exact incident lookup must work first.
-- **Data handling**: this sample is treated as a development dataset. Do not upload confidential company records or instructions to third-party AI services without authorization.
+## 8. RAG retrieval, grounding, sources, and citations
 
-## Next build steps
-1. Incident CRUD and ingestion validation
-2. Vector indexing of *closed/verified* incidents and hybrid retrieval (structured filter + semantic similarity)
-3. File-upload pipeline for SOP PDF / DOCX / XLSX / XLS with provenance and permissions (ad-hoc question attachments are supported; indexed SOPs are not)
-4. Retrieval evaluation with repeat-fault questions; cite record and document page
-5. LLM answer generation with grounding and insufficient-evidence behavior
-6. MCP server exposing approved read tools
+Question-only flow (`ask_machinecare` in `backend/app/services/rag_service.py`):
 
-## Python concepts learned
-- `class` and type hints define the domain model
-- `with Session(engine)` manages database sessions
-- functions decorated by `@app.get` become HTTP endpoints
-- `select(...)` builds parameterized SQL queries
-- `asynccontextmanager` manages startup tasks
+1. **Dense retrieval.** `search_similar_incidents(question, top_k=5, machine)` queries the Chroma
+   collection `machine_downtime_incidents` (cosine space) using ChromaDB's default ONNX
+   all-MiniLM-L6-v2 embedding function. When a machine code is supplied it is passed as an exact
+   metadata filter.
+2. **Distance gate.** Matches with `distance > MAX_DISTANCE` (`0.50`) are discarded.
+3. **Authoritative reload.** Each remaining ID is loaded from PostgreSQL with its machine and
+   resolution. The record is dropped if it no longer exists, its status is not `Closed`, its
+   machine or resolution is missing, or it does not match the requested machine filter. This keeps
+   a stale ChromaDB entry from ever grounding an answer.
+4. **No-evidence fallback.** If nothing survives, the service returns the fixed message
+   "I couldn't find a sufficiently relevant resolved downtime incident in the database." with empty
+   `sources` and citation lists, without calling Groq.
+5. **Prompt construction.** The prompt contains the retrieved evidence as JSON plus rules requiring:
+   historical findings separated from hypotheses, every historical finding citing an exact
+   incident ID, possible causes labelled as hypotheses, corrective actions described only as
+   recorded, preventive actions treated as past plans, no invented procedures/thresholds/part
+   numbers, no claim that repairs succeeded, and incident records treated as untrusted data.
+   The requested output sections are Similar Historical Incidents, Historical Root Causes,
+   Previously Recorded Corrective Actions, Possible Causes (hypotheses), Recommended Next Steps
+   (recommendations) and Sources.
+6. **Generation.** `generate_response(prompt)` calls Groq chat completions with temperature `0.2`
+   and the configured model.
+7. **Citation check.** Incident IDs are extracted from the answer after normalizing typographic
+   dashes, zero-width characters and spacing. Only IDs present in the evidence set are reported as
+   `cited_incident_ids`; others become `unsupported_citations` and a note is appended to the answer.
+8. **Document-reference guard.** If the answer mentions manuals, SOPs, work instructions,
+   checklists, service bulletins or similar documents that are not in the evidence, a note is
+   appended stating that only incident records are indexed and those references were not verified.
+9. **Response.** `answer`, `sources`, `cited_incident_ids` and `unsupported_citations` are returned.
+
+Document-aware flow (`ask_machinecare_with_documents`) uses the same retrieval, threshold and machine
+filter, so an attachment cannot weaken grounding:
+
+- Instruction-like lines in the uploaded text are replaced with `[instruction-like line removed]`
+  before the prompt is built.
+- Each document is wrapped in `<<<BEGIN UNTRUSTED DOCUMENT>>>` / `<<<END UNTRUSTED DOCUMENT>>>`
+  markers, with at most **12,000 characters shared across all attachments** in one prompt.
+- The model must separate document statements (attributed by filename, unverified) from incident
+  history (with exact IDs) and recommendations; incident IDs that appear only in a document must
+  not be cited.
+- If no incident passes the threshold, generation still runs on the documents and a note is
+  appended stating that the answer is based on the uploaded document only.
+
+The UI mirrors this: the answer card marks verified citations and labels unsupported ones as
+"unverified", and the sources rail lists the incidents used for the latest completed answer.
+
+## 9. Chat UI and conversation behavior
+
+- **First load.** The hero shows the illustration, heading and four suggested prompts. Prompts are
+  static strings in `Hero.tsx`.
+- **Starting a conversation.** Clicking a suggested prompt submits it immediately (the same path as
+  pressing Ask) and focuses the composer. Typing or attaching files alone does not start a
+  conversation. Once any turn exists, the hero collapses to a compact banner and the suggestions
+  are hidden for the rest of the session, including for follow-up questions.
+- **Composer.** Enter submits, Shift+Enter inserts a newline, and the Ask button submits the
+  trimmed draft. The textarea is limited to 2000 characters and a counter appears past 1700.
+- **Machine filter.** An optional free-text field (maximum 50 characters, placeholder `AOI-01`)
+  is sent as `machine` with the question. It is matched exactly against `machines.machine_code`,
+  so `aoi-01` or a partial name returns no evidence.
+- **Transcript.** Each exchange appends a user bubble (question, attachment names and sizes,
+  machine filter) and an assistant answer. Answers render Markdown with GFM tables; raw HTML in
+  the answer is escaped by react-markdown. A pending turn
+  shows an animated "Retrieving evidence…" bubble, or "Reading documents and retrieving
+  evidence…" when files were attached.
+- **Errors and retry.** Failures render the message plus a "Try again" button; the retry reuses the
+  original question, machine and files, so an upload does not have to be reselected.
+- **Sources rail.** Shows the sources of the most recent completed answer with machine code,
+  distance to three decimals, and a `cited` marker; before the first answer it shows an idle hint.
+- **Health indicator.** `GET /health` is polled every 30 seconds and on window focus; a network
+  failure during an ask marks the API offline immediately.
+- **State.** The conversation is client-side only (`useAsk`), one request at a time, no streaming.
+  A page refresh clears the thread, and follow-up questions are sent without earlier turns, so each
+  answer is retrieved from the new question only.
+
+## 10. File attachments and drag-and-drop
+
+Client-side rules (`frontend/src/lib/files.ts`, constants in `frontend/src/types.ts`):
+
+| Rule | Value |
+| --- | --- |
+| Formats | `.pdf`, `.txt`, `.csv`, `.docx`, `.xlsx`, `.xls` |
+| Count | at most 3 files per question |
+| Size | at most 10 MB (10 × 1024 × 1024 bytes) each |
+| Empty files | rejected |
+| Duplicate names | rejected (case-insensitive) |
+| Question | 1–2000 characters |
+| Machine | at most 50 characters |
+
+UI behavior:
+
+- Attached files appear as chips **above the question textarea**, each with a document icon, name,
+  size, and a remove button; validation messages appear in the same area, above the textarea. The
+  Attach button shows an `n/3` count.
+- The Attach button and the hidden file input remain available. Attach is disabled while a request
+  is pending and when three files are attached.
+- Dropping files anywhere on the chat panel attaches them through the same `selection.add`
+  validation path, shows a dashed orange overlay reading "Drop files to attach" with the supported
+  formats and limits, and never submits the question. The overlay does not flicker when the pointer
+  moves between nested children, is cleared by leaving the panel, dropping, cancelling the drag, or
+  starting a request, and is ignored while an answer is in flight.
+- File drags anywhere on the page are prevented from navigating the browser to the dropped file.
+- With attachments the frontend calls `POST /api/v1/ask-with-files`; without attachments it calls
+  `POST /api/v1/ask`.
+
+Server-side validation and extraction (`backend/app/services/document_extraction.py`) run in memory
+for every request; nothing is written to disk, PostgreSQL or ChromaDB.
+
+1. **Extension** must be one of `.pdf`, `.txt`, `.csv`, `.docx`, `.xlsx`, `.xls` (otherwise 415).
+2. **Declared content type** must be compatible with the extension unless the browser sent a generic
+   type (otherwise 415).
+3. **Size** must be non-zero and at most 10 MB (422 for empty, 413 for oversized).
+4. **Signature** is checked: `%PDF-` for PDF, a ZIP containing `word/document.xml` for DOCX, a ZIP
+   containing `xl/workbook.xml` for XLSX (encrypted files and macro-enabled workbooks are rejected),
+   and the OLE2 compound-file header for XLS. Binary TXT/CSV content is rejected with 415.
+5. **Extraction** is read-only and never executes anything: no macros, no formula calculation, no
+   external links. Formula cells use the cached value; a formula without one becomes
+   `[formula without cached value]`. Hidden worksheets are included and labelled `[hidden]`.
+
+| Format | Reader | Caps |
+| --- | --- | --- |
+| PDF | pypdf | 300 pages |
+| DOCX | zipfile + XML | body or expanded archive ≤ 20 MB |
+| XLSX | openpyxl (read-only) | ≤ 50 MB uncompressed, ≤ 2,000 archive entries, 10 worksheets, 500 rows and 20 columns per worksheet, 4,000 cells, 400 characters per cell |
+| XLS | xlrd | 10 worksheets, 500 rows and 20 columns per worksheet, 4,000 cells, 400 characters per cell |
+| CSV | csv | 5,000 rows |
+| TXT / CSV | stdlib | UTF-16, UTF-8 or Windows-1252 decoding |
+
+Extracted text is capped at **20,000 characters per file** and **12,000 characters across all
+attachments** in one prompt. Truncation is marked inline and reported as `truncated: true`.
+Scanned/image-only PDFs are not OCRed and are rejected when no text can be extracted.
+
+Attachments are **ad-hoc question context**: they are shown in the transcript, listed in the
+answer's "Documents analyzed" block, and discarded when the request ends. They are not imported
+into PostgreSQL, not indexed in ChromaDB, and not searchable in later questions.
+
+## 11. Database setup, migrations, seeding, and vector indexing
+
+PostgreSQL schema (created by the single Alembic revision `6041a26eff31`):
+
+- `machines` — `id`, unique `machine_code`, `name`, optional `production_line`.
+- `downtime_incidents` — `id`, unique `incident_id`, `machine_id` (FK), optional `production_line`,
+  `date`, `product`, `issue_category`, `cause`, `downtime_minutes`, `responsible_team`, `status`.
+- `downtime_resolutions` — 1:1 with an incident (`incident_id` FK, unique), with `root_cause`,
+  `action_taken` and `preventive_action`.
+
+Migrations:
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe -m alembic upgrade head
+..\.venv\Scripts\python.exe -m alembic current
+```
+
+Alembic must run from `backend/`: `alembic.ini` and `migrations/env.py` import the `app` package,
+which reads the `DB_*` variables from the root `.env`. To change the schema, autogenerate a
+revision, review it, then upgrade:
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe -m alembic revision --autogenerate -m "describe the change"
+..\.venv\Scripts\python.exe -m alembic upgrade head
+```
+
+Seeding and indexing are separate, manual steps. Nothing synchronizes the JSON file, PostgreSQL
+and ChromaDB automatically, and the RAG API does not seed or index on startup.
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+
+# PostgreSQL: create missing machines and incidents from data/incidents.json
+..\.venv\Scripts\python.exe seed_database.py
+
+# ChromaDB: upsert every Closed incident (with its machine and resolution)
+..\.venv\Scripts\python.exe index_incidents.py
+```
+
+- `seed_database.py` is idempotent by incident ID: it creates missing machines and incidents and
+  **skips** existing ones, so it does not update records that were edited.
+- `index_incidents.py` re-reads PostgreSQL, upserts documents into the persistent collection at
+  `backend/data/chroma_db` (collection `machine_downtime_incidents`, cosine space), and prints the
+  resulting collection count. Re-run it after changing incident text; it never removes IDs that no
+  longer qualify, but those stale entries are filtered out at question time because every match is
+  re-validated against PostgreSQL.
+- The correct order is: migrate → seed → index. Indexing before seeding indexes nothing.
+
+Operational notes:
+
+- Data lives in the Docker volume `machinecare_pgdata`. `docker compose down` keeps it;
+  `docker compose down -v` deletes the database and requires migrating and seeding again.
+- `backend/data/chroma_db` is git-ignored. Deleting that directory and re-running
+  `index_incidents.py` rebuilds the index from PostgreSQL.
+- The Phase 1 app's SQLite/`DATABASE_URL` `incidents` table is a separate store; it does not feed
+  the RAG API and is not migrated by Alembic.
+
+## 12. Testing and troubleshooting
+
+Backend tests need no running PostgreSQL, no populated index and no Groq key: fixtures use in-memory
+SQLite and mock retrieval/generation. Importing the vector module may create the local
+`backend/data/chroma_db` directory, but the tests never query it.
+
+Run them with:
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe -m pytest
+```
+
+The current suite reports **209 passed** (one Starlette deprecation warning). Run pytest from
+`backend/`; `pytest.ini` sets `testpaths = tests`, so running it from the repository root collects
+nothing.
+
+Offline evaluation reports (isolated in-memory Chroma collections built from `incidents.json`; the
+persistent collection is not queried, cleared or overwritten, and no Groq call is made):
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe -m tests.retrieval_eval
+..\.venv\Scripts\python.exe -m tests.rerank_eval
+```
+
+`tests/rerank_eval.py` is an experiment only: the hybrid/rerank configuration grid is calibrated on
+the same 13 questions it scores, and no production module imports it. Production retrieval remains
+dense top-5 plus the distance gate.
+
+Frontend type-check and production build (there is no frontend unit-test runner):
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\frontend
+npm run build
+```
+
+Manual smoke scripts in `backend/` are optional and need live services:
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe test_database.py        # PostgreSQL connectivity
+..\.venv\Scripts\python.exe test_models.py          # ORM table registration
+..\.venv\Scripts\python.exe test_repository.py      # Closed-incident queries
+..\.venv\Scripts\python.exe test_embeddings.py      # Embedding model loads and returns vectors
+..\.venv\Scripts\python.exe test_semantic_search.py # Similarity search only
+..\.venv\Scripts\python.exe test_retrieval.py       # JSON keyword retrieval helper
+..\.venv\Scripts\python.exe test_groq.py            # Groq connectivity
+..\.venv\Scripts\python.exe test_rag.py             # Full RAG answer
+```
+
+Troubleshooting:
+
+| Symptom | Likely cause and fix |
+| --- | --- |
+| `KeyError: 'DB_USER'` (or `DB_NAME`) at import | The root `.env` is missing or incomplete; create it and run from `backend/` so it is found |
+| `OperationalError` / connection refused on port 5434 | PostgreSQL is not running; run `docker compose up -d` and check `docker compose ps` |
+| Header pill offline, or "The RAG API could not be reached. Is it running on port 8001?" | The RAG API is not running on 8001 (uvicorn's default 8000 is not proxied) |
+| "I couldn't find a sufficiently relevant resolved downtime incident…" | Empty or stale ChromaDB index, no record within distance `0.50`, or a machine filter that does not exactly match a code; re-run `seed_database.py` then `index_incidents.py`, and clear the machine field |
+| 500 "Failed to answer the question." | Usually a missing/invalid `GROQ_API_KEY` or a Groq outage; the server log has the traceback |
+| First indexing or first question is slow | ChromaDB is downloading the ONNX MiniLM embedding model; network access is needed once |
+| pytest collects 0 tests | Run it from `backend/`, not the repository root |
+| `ModuleNotFoundError: app` or Alembic cannot find models | Run `alembic`/scripts from `backend/` with the repository virtual environment |
+| `.\.venv\Scripts\Activate.ps1` is blocked | Skip activation and call `..\.venv\Scripts\python.exe` directly |
+
+## 13. Security and data handling
+
+- **Secrets.** API keys and database credentials live only in the git-ignored root `.env`. They are
+  never sent to the browser, and the frontend has no configuration file containing them. Do not
+  commit `.env` or paste its values into logs, screenshots or issues.
+- **Network exposure.** PostgreSQL is published on `127.0.0.1:5434` only. ChromaDB is a local
+  directory, not a service. There is no TLS, authentication, authorization or rate limiting on
+  either FastAPI app, so treat the stack as local-development only and put it behind an
+  authenticating reverse proxy before sharing it.
+- **Uploads.** Files are read into memory in 64 KB chunks with an early size rejection, validated by
+  extension, declared type and signature, parsed read-only, and discarded with the request. Nothing
+  is written to disk, PostgreSQL or ChromaDB, and archive expansion is capped to resist zip bombs.
+  No macro, formula, external link or embedded object is ever executed.
+- **Prompt injection.** Attachment text is labelled as untrusted data, instruction-like lines are
+  replaced before the prompt is built, and the prompt forbids following document instructions,
+  changing role, or revealing secrets, environment variables, keys or the prompt itself.
+- **Grounding.** The answer prompt may only use retrieved records, cited IDs are verified against
+  the evidence set, unverified IDs are disclosed in the response and flagged in the UI, and the
+  question-only flow discloses references to manuals/SOPs that are not indexed.
+- **Logging and errors.** Request failures are logged server-side with a stack trace; clients
+  receive generic messages. Extracted document text is not included in error responses.
+- **Third-party processing.** Groq receives the question, the retrieved incident evidence and any
+  extracted attachment text. Do not upload confidential company records or instructions to a
+  third-party AI service without authorization. The sample dataset is development data.
+
+## 14. Current limitations and planned features
+
+Current limitations (verified against the code):
+
+- No incident create/update/delete API and no import endpoint. `seed_database.py` only inserts
+  missing records, so changing an existing record requires a manual SQL update or a fresh database.
+- No indexed SOP/manual knowledge base and no document management. Attachments are per-question
+  context only, are not persisted, and are not searchable afterwards.
+- No OCR: scanned or image-only PDFs are rejected when no text can be extracted.
+- No authentication, roles, permissions, audit trail, TLS or rate limiting.
+- No streaming responses, no cancel button, one in-flight question at a time.
+- No persisted conversations and no multi-turn context: a follow-up is retrieved and answered from
+  its own text only, and a refresh clears the thread.
+- Production retrieval is dense-only. The hybrid/rerank pipeline exists only as an offline
+  experiment in `backend/tests/rerank_eval.py`.
+- ChromaDB is not updated automatically when records change; `index_incidents.py` must be re-run.
+- The machine filter requires an exact machine code; there is no machine list or autocomplete.
+- No CI configuration, no container images for the two APIs, and no production serving/proxy setup
+  for the built frontend (the Vite proxy is a development feature).
+- Two independent data surfaces exist: the Alembic/PostgreSQL schema used by the RAG API and the
+  Phase 1 app's own flat `incidents` table.
+
+Planned features (not implemented yet):
+
+1. Incident management and validated import endpoints with provenance.
+2. Indexed SOPs and work instructions with versioning, provenance and permissions.
+3. Promotion of hybrid retrieval/reranking into production after evaluation, with quality gates in
+   CI.
+4. Persisted conversations and streaming answers.
+5. Authentication, roles and audit logging.
+6. MCP read-only tools exposing approved queries.
+7. Containerized deployment for both APIs and the built frontend.
