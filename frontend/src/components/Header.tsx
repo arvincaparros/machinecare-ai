@@ -1,7 +1,13 @@
 import type { ApiStatus } from "../hooks/useApiHealth";
 import { StatusPill } from "./StatusPill";
 
-export function Header({ status }: { status: ApiStatus }) {
+interface HeaderProps {
+  status: ApiStatus;
+  /** Opens the incident import dialog; the dialog itself lives in App. */
+  onOpenImport: () => void;
+}
+
+export function Header({ status, onOpenImport }: HeaderProps) {
   return (
     <header className="header">
       <div className="header__inner">
@@ -31,6 +37,32 @@ export function Header({ status }: { status: ApiStatus }) {
         </div>
 
         <div className="header__meta">
+          <button
+            type="button"
+            className="header__import"
+            onClick={onOpenImport}
+            aria-haspopup="dialog"
+            aria-label="Import incidents"
+            title="Import incidents from a CSV or XLSX file"
+          >
+            <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+              <path
+                d="M12 15.5V3.8m0 0L7.8 8M12 3.8 16.2 8"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+              <path
+                d="M4 14.5v4A1.8 1.8 0 0 0 5.8 20.3h12.4A1.8 1.8 0 0 0 20 18.5v-4"
+                stroke="currentColor"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="header__import-label">Import incidents</span>
+          </button>
+
           <StatusPill status={status} />
           <span className="header__version">RAG API · v1</span>
         </div>

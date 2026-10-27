@@ -23,6 +23,7 @@ from fastapi import (
     UploadFile,
 )
 
+from app.api.incident_import import router as incident_import_router
 from app.api.schemas import (
     MAX_MACHINE_LENGTH,
     MAX_QUESTION_LENGTH,
@@ -95,6 +96,10 @@ app = FastAPI(
     title="MachineCare AI RAG API",
     version="0.1.0",
 )
+
+# Read-only incident import routes; the router keeps its own path prefix
+# and imports the database lazily.
+app.include_router(incident_import_router)
 
 
 @app.get("/health", response_model=HealthResponse)

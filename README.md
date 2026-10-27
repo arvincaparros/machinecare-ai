@@ -7,8 +7,9 @@ by semantic similarity, and Groq generates the answer from the retrieved evidenc
 
 This is a working local development stack, not a hardened production service. There is no
 authentication, the conversation lives only in the browser tab, and attachments are per-question
-context rather than an indexed document library. See
-[section 14](#14-current-limitations-and-planned-features).
+context rather than an indexed document library. The incident import writes to PostgreSQL through
+unauthenticated endpoints, so keep the stack on a local machine. See
+[section 15](#15-current-limitations-and-planned-features).
 
 ## 1. Project overview and current capabilities
 
@@ -24,21 +25,25 @@ What works today:
   and the PostgreSQL reload.
 - **Ad-hoc attachments** (PDF, TXT, CSV, DOCX, XLSX, XLS) used as extra context for a single
   question, chosen with the Attach button or dragged onto the chat panel.
+- **Incident import** from a CSV or XLSX file, opened from the header: a read-only check with
+  row-level errors first, then a single-transaction insert of the eligible rows, followed by a
+  separate ChromaDB indexing step with a reindex retry (section 11).
 - **Chat UI** with suggested prompts, follow-up questions, Markdown answers, a sources rail,
   error retry, and a liveness indicator.
 - **Two FastAPI applications**: the RAG API the frontend uses, plus the standalone Phase 1
   database-only record API for inspecting the original incident table.
 
-What does **not** exist yet: incident CRUD or import endpoints, indexed SOP/document management,
-permissions or authentication, MCP tools, streaming, and persisted chat history. Those are listed
-as planned work in section 14.
+What does **not** exist yet: incident update/delete endpoints, per-row import provenance, indexed
+SOP/document management, permissions or authentication, MCP tools, streaming, and persisted chat
+history. Those are listed as planned work in section 15.
 
 ## 2. Architecture and data flow
 
 ```
 Browser (React 19 + Vite dev server, http://localhost:5173)
    |  same-origin /api/v1/ask, /api/v1/ask-with-files, /health
-   |  (Vite dev proxy forwards to http://127.0.0.1:8001)
+   |  same-origin /api/v1/incidents/import/* (template, machines, preview, commit, reindex)
+   |  (Vite dev proxy forwards both to http://127.0.0.1:8001)
    v
 RAG API (FastAPI, app.api.main:app, port 8001)
    |  1. validate question and optional machine code
@@ -65,6 +70,9 @@ Key properties of the pipeline:
   "couldn't find a sufficiently relevant resolved downtime incident" answer with empty sources.
 - **Uploads never become evidence records.** Attachment text is added to the prompt as untrusted
   user data; it is not written to PostgreSQL, ChromaDB or disk, and it cannot be cited as history.
+- **Importing is the only write path.** The import commit inserts eligible incidents and their
+  resolutions in one transaction, then refreshes ChromaDB from PostgreSQL. A failed refresh leaves
+  the committed rows in place and is reported as a separate indexing status.
 
 ## 3. Repository layout
 
@@ -76,6 +84,8 @@ machinecare-ai-starter/
 │  ├─ app/
 │  │  ├─ api/
 │  │  │  ├─ main.py          RAG FastAPI app (used by the frontend)
+│  │  │  ├─ incident_import.py          Template, machines, preview, commit and reindex routes
+│  │  │  ├─ incident_import_schemas.py  Import request/response models
 │  │  │  └─ schemas.py       Pydantic request/response models and limits
 │  │  ├─ main.py             Phase 1 database-only FastAPI app (separate)
 │  │  ├─ db/database.py      Engine and session factory from DB_* variables
@@ -86,6 +96,11 @@ machinecare-ai-starter/
 │  │     ├─ vector_store_service.py    ChromaDB indexing and search
 │  │     ├─ groq_service.py            Groq chat completion call
 │  │     ├─ document_extraction.py     In-memory attachment validation and text extraction
+│  │     ├─ incident_import_service.py CSV/XLSX parsing, validation and row errors
+│  │     ├─ incident_import_preview.py Read-only comparison of the rows with PostgreSQL
+│  │     ├─ incident_import_commit.py  Single-transaction insert, then indexing
+│  │     ├─ incident_import_template.py XLSX and CSV template generation
+│  │     ├─ incident_import_digest.py  Upload SHA-256 that binds a preview to its commit
 │  │     └─ incident_retrieval_service.py  JSON loading and keyword search helper
 │  ├─ migrations/            Alembic environment and revisions
 │  ├─ tests/                 pytest suite, fixtures, retrieval/rerank evaluations
@@ -101,9 +116,12 @@ machinecare-ai-starter/
 │  └─ test_*.py              Manual smoke scripts (not collected by pytest)
 └─ frontend/
    ├─ src/api/client.ts      Fetch layer with timeouts and error mapping
-   ├─ src/components/        Header, hero, chat thread, answer card, sources, composer, overlay
-   ├─ src/hooks/             useAsk, useApiHealth, useAttachments, useFileDrop
+   ├─ src/api/importClient.ts Import endpoints, response checks and template downloads
+   ├─ src/components/        Header, hero, chat thread, answer card, sources, composer, overlay,
+   │                         import dialog
+   ├─ src/hooks/             useAsk, useApiHealth, useAttachments, useFileDrop, useIncidentImport
    ├─ src/lib/files.ts       Client-side attachment validation
+   ├─ src/lib/importFile.ts  Client-side import limits and template downloads
    ├─ src/types.ts           API types and shared limit constants
    ├─ src/styles.css         Dark charcoal/orange theme
    └─ vite.config.ts         Dev server on 5173, proxy to 127.0.0.1:8001
@@ -236,7 +254,7 @@ the RAG API uses the `DB_*` variables, while the Phase 1 app uses `DATABASE_URL`
 
 | Application | Module | Port | Used by the frontend | Purpose |
 | --- | --- | --- | --- | --- |
-| RAG API | `app.api.main:app` | 8001 (`--port 8001`) | Yes | Question answering over PostgreSQL + ChromaDB + Groq, with attachments |
+| RAG API | `app.api.main:app` | 8001 (`--port 8001`) | Yes | Question answering over PostgreSQL + ChromaDB + Groq, attachments, and the incident import |
 | Phase 1 record API | `app.main:app` | 8000 (uvicorn default) | No | Read-only inspection of the original incident table |
 
 ### RAG API (`backend/app/api/main.py`)
@@ -283,6 +301,39 @@ Error responses:
 | 415 | unsupported extension, declared content type mismatch, invalid file signature, binary TXT/CSV |
 | 422 | blank question; empty or unreadable document; unsupported encoding; encrypted/mislabeled workbook; a workbook with no cell values |
 | 500 | retrieval or generation failure; the client sees a generic message and the traceback is logged server-side |
+
+### Incident import endpoints (`backend/app/api/incident_import.py`)
+
+| Method | Path | Request | Response |
+| --- | --- | --- | --- |
+| GET | `/api/v1/incidents/import/template.xlsx` | query `format=xlsx` (default) or `format=csv` | the template file, sent with `Content-Disposition` |
+| GET | `/api/v1/incidents/import/machines` | none | `{"machines": [...]}`, the machine codes a row may reference |
+| POST | `/api/v1/incidents/import/preview` | multipart `file`, form `skip_existing` (default `false`) | `ImportPreviewResponse`, always 200 for a file that parses |
+| POST | `/api/v1/incidents/import` | multipart `file`, form `file_sha256`, form `skip_existing` | `ImportCommitResponse` |
+| POST | `/api/v1/incidents/import/reindex` | none | `ReindexResponse` |
+
+`ImportPreviewResponse` fields: `file_name`, `file_sha256` (SHA-256 of the uploaded bytes),
+`skip_existing`, `total_rows`, `valid_rows`, `invalid_rows`, `skipped_existing_rows`,
+`eligible_rows`, `rows` (`row`, `incident_id`, `date`, `machine`, `production_line`,
+`downtime_minutes`, `state`) and `errors` (`row`, `field`, `code`, `message`). Row-level problems
+are the preview's answer, so they arrive with 200 rather than as an error status.
+
+`ImportCommitResponse` fields: `file_name`, `file_sha256`, `skip_existing`, `imported_rows`,
+`imported_incident_ids`, `skipped_existing_rows`, `database_committed`, and `indexing`
+(`status` = `indexed` | `failed` | `skipped`, `collection_total`, `message`). `collection_total` is
+the size of the whole ChromaDB collection after a refresh, not the number of rows the import added.
+
+| Status | Cause |
+| --- | --- |
+| 409 | the upload does not match `file_sha256`, or the database changed after the preview; nothing is written |
+| 413 | the upload exceeds the 5 MB import limit |
+| 415 | the extension or file format is not CSV or XLSX, or the file signature does not match |
+| 422 | bad or missing headers, an empty file, more than 5,000 data rows, or any row-level problem at commit time; nothing is written |
+| 500 | the database write failed; nothing is written |
+| 503 | a reindex attempt failed; rows committed by an earlier import stay in place |
+
+These endpoints have **no authentication or authorisation** and are the only write path into
+PostgreSQL. They exist for local development; section 11 describes the UI workflow.
 
 ### Phase 1 record API (`backend/app/main.py`)
 
@@ -363,6 +414,9 @@ The UI mirrors this: the answer card marks verified citations and labels unsuppo
 - **Machine filter.** An optional free-text field (maximum 50 characters, placeholder `AOI-01`)
   is sent as `machine` with the question. It is matched exactly against `machines.machine_code`,
   so `aoi-01` or a partial name returns no evidence.
+- **Header actions.** The header shows the API status pill and an `Import incidents` button that
+  opens the import dialog (section 11). The button is separate from the chat: it never touches the
+  draft question or the attached files.
 - **Transcript.** Each exchange appends a user bubble (question, attachment names and sizes,
   machine filter) and an assistant answer. Answers render Markdown with GFM tables; raw HTML in
   the answer is escaped by react-markdown. A pending turn
@@ -439,7 +493,102 @@ Attachments are **ad-hoc question context**: they are shown in the transcript, l
 answer's "Documents analyzed" block, and discarded when the request ends. They are not imported
 into PostgreSQL, not indexed in ChromaDB, and not searchable in later questions.
 
-## 11. Database setup, migrations, seeding, and vector indexing
+## 11. Incident import from CSV or XLSX
+
+The `Import incidents` button in the header opens a modal that adds closed downtime incidents in
+bulk. It is separate from chat attachments in every way: it never submits a question, it has its own
+API client (`frontend/src/api/importClient.ts`) and state machine
+(`frontend/src/hooks/useIncidentImport.ts`), and closing the dialog discards the chosen file, the
+check result and the outcome.
+
+**Local development only.** The import endpoints have no authentication or authorisation, so anyone
+who can reach the RAG API can write to the incident database. The dialog states this before the first
+action. Do not expose the stack on a shared or public network (section 14).
+
+### File format and limits
+
+Download the template from the dialog (`XLSX template` or `CSV template`) or from
+`GET /api/v1/incidents/import/template.xlsx?format=csv`. Columns may be in any order and header names
+are matched case-insensitively:
+
+| Column | Required | Rules |
+| --- | --- | --- |
+| `Incident ID` | yes | unique; an existing ID is a row error unless `skip_existing` is on |
+| `Date` | yes | calendar date such as `2026-07-01` |
+| `Machine` | yes | an exact machine code that already exists, for example `AOI-01` |
+| `Downtime (min)` | yes | whole number, 0–1440 |
+| `Cause` | yes | text |
+| `Action Taken` | yes | text |
+| `Root Cause` | yes | text |
+| `Status` | yes | `Closed` only; this version imports closed incidents |
+| `Production Line`, `Product`, `Issue Category`, `Responsible Team`, `Preventive Action` | no | text |
+
+| Rule | Value | Enforced by |
+| --- | --- | --- |
+| Formats | `.csv`, `.xlsx` | dialog and API |
+| Size | 5 MB (5 × 1024 × 1024 bytes) | dialog as an early check, API as the authority (413) |
+| Data rows | 5,000 | dialog copy and API (422) |
+| Scanned rows | 20,000 | API only |
+| XLSX archive | entry count and expanded size caps | API only |
+
+The dialog rejects an unsupported extension, an empty file and an oversized file before sending
+anything, because that is faster feedback. The API repeats every check and is authoritative.
+
+### Workflow
+
+1. **Choose the file** (`1 · Choose the file`). The chosen name and size appear next to the button; a
+   rejected file shows an alert and no request is made.
+2. **Options** (`2 · Options`). `Skip rows whose incident ID already exists` is off by default. With
+   it off, an existing ID is a row error; with it on, that row is counted as skipped. Existing
+   incidents are never updated or overwritten in either mode.
+3. **Check the file** (`3 · Check the file`) posts to `/preview`. Checking is read-only: the API
+   parses the rows, validates them and compares incident IDs and machine codes with the database.
+   The summary shows `Data rows`, `Invalid`, `Skipped · already exist` and `Eligible to import` from
+   the response, plus the short SHA-256 and the `skip_existing` value the response was produced
+   with. Row-level problems appear in a table with row number, field and message (the first 50; the
+   rest are summarised). Any invalid row blocks the import.
+4. **Import** (`4 · Import`). `Import N rows` is enabled only when the preview has at least one
+   eligible row and no invalid rows; otherwise the dialog explains what is blocking.
+
+Changing the file, or toggling `skip_existing`, clears the preview, so the button cannot submit a
+check that no longer describes what would be written. The dialog also refuses a commit whose preview
+was produced with a different `skip_existing`.
+
+### Confirmation
+
+The commit posts the same `File` object plus the preview's `file_sha256` and `skip_existing` to
+`POST /api/v1/incidents/import`. The API recomputes the digest, re-checks every row against the
+database as it is now, and inserts the eligible incidents and their resolutions in **one
+transaction**. If any row fails, nothing is written.
+
+- **409** (`The import was not confirmed`) means the data changed since the check, or the upload no
+  longer matches the digest. The dialog clears the preview and offers `Check the file again`.
+- **Timeout or ambiguous network failure.** The request is never retried automatically, because the
+  server may already have committed the transaction. The dialog says so explicitly and asks the user
+  to check the incident records and the search index before importing the file again.
+- **Duplicate submissions** are prevented by a single in-flight guard in the hook and by the
+  disabled `Importing…` button. Closing the dialog, pressing Escape or clicking the backdrop is
+  refused while a commit is running.
+- **500** means the write failed and nothing was inserted.
+
+### Result and indexing recovery
+
+The result panel reports the two stages separately, because they can disagree:
+
+- **Database stage**: `Database committed` with `Rows imported` and `Skipped · already exist`, plus
+  the imported incident IDs (the first eight).
+- **Indexing stage**: `Search indexing` with `Indexed`, `Needs attention` or `Skipped`. When indexing
+  failed, the panel states that the rows were imported successfully but indexing needs attention, and
+  offers `Retry indexing`, which calls `POST /api/v1/incidents/import/reindex`.
+
+`Retry indexing` re-reads PostgreSQL and upserts every **Closed incident** into ChromaDB, not only the
+rows just imported. It never inserts, updates or deletes PostgreSQL rows and it never clears the
+collection. `Collection total` is labelled as the size of the whole vector collection, not the number
+of rows that were indexed or imported.
+
+After a result, `Close` dismisses the dialog and `Import another file` resets it to step 1.
+
+## 12. Database setup, migrations, seeding, and vector indexing
 
 PostgreSQL schema (created by the single Alembic revision `6041a26eff31`):
 
@@ -488,6 +637,9 @@ cd C:\Projects\machinecare-ai-starter\backend
   longer qualify, but those stale entries are filtered out at question time because every match is
   re-validated against PostgreSQL.
 - The correct order is: migrate → seed → index. Indexing before seeding indexes nothing.
+- The import needs the migrated schema and the seeded machine list: a row whose machine code does
+  not exist is rejected, and imported rows become searchable only once the indexing step succeeds
+  (section 11).
 
 Operational notes:
 
@@ -498,7 +650,7 @@ Operational notes:
 - The Phase 1 app's SQLite/`DATABASE_URL` `incidents` table is a separate store; it does not feed
   the RAG API and is not migrated by Alembic.
 
-## 12. Testing and troubleshooting
+## 13. Testing and troubleshooting
 
 Backend tests need no running PostgreSQL, no populated index and no Groq key: fixtures use in-memory
 SQLite and mock retrieval/generation. Importing the vector module may create the local
@@ -511,9 +663,11 @@ cd C:\Projects\machinecare-ai-starter\backend
 ..\.venv\Scripts\python.exe -m pytest
 ```
 
-The current suite reports **209 passed** (one Starlette deprecation warning). Run pytest from
-`backend/`; `pytest.ini` sets `testpaths = tests`, so running it from the repository root collects
-nothing.
+The current suite reports **409 passed, 3 skipped** (one Starlette deprecation warning). The three
+skipped tests are the import concurrency tests in `tests/test_import_concurrency_postgres.py`, which
+need a disposable PostgreSQL database: they run only when `IMPORT_TEST_POSTGRES_URL` is set, and
+refuse any database whose name does not contain `import_test`. Run pytest from `backend/`;
+`pytest.ini` sets `testpaths = tests`, so running it from the repository root collects nothing.
 
 Offline evaluation reports (isolated in-memory Chroma collections built from `incidents.json`; the
 persistent collection is not queried, cleared or overwritten, and no Groq call is made):
@@ -534,6 +688,9 @@ Frontend type-check and production build (there is no frontend unit-test runner)
 cd C:\Projects\machinecare-ai-starter\frontend
 npm run build
 ```
+
+The build runs `tsc --noEmit` first, so a type error fails it. There is no frontend test runner; the
+import dialog is verified by hand against a mocked API, never against the development database.
 
 Manual smoke scripts in `backend/` are optional and need live services:
 
@@ -563,7 +720,7 @@ Troubleshooting:
 | `ModuleNotFoundError: app` or Alembic cannot find models | Run `alembic`/scripts from `backend/` with the repository virtual environment |
 | `.\.venv\Scripts\Activate.ps1` is blocked | Skip activation and call `..\.venv\Scripts\python.exe` directly |
 
-## 13. Security and data handling
+## 14. Security and data handling
 
 - **Secrets.** API keys and database credentials live only in the git-ignored root `.env`. They are
   never sent to the browser, and the frontend has no configuration file containing them. Do not
@@ -572,6 +729,10 @@ Troubleshooting:
   directory, not a service. There is no TLS, authentication, authorization or rate limiting on
   either FastAPI app, so treat the stack as local-development only and put it behind an
   authenticating reverse proxy before sharing it.
+- **Import endpoints.** `/api/v1/incidents/import/preview`, `/api/v1/incidents/import` and
+  `/api/v1/incidents/import/reindex` have no authentication or authorisation, and the commit writes
+  to PostgreSQL. Anyone who can reach the RAG API can insert incidents and trigger a full reindex of
+  the vector collection. The dialog carries the same warning; keep the API on a local machine.
 - **Uploads.** Files are read into memory in 64 KB chunks with an early size rejection, validated by
   extension, declared type and signature, parsed read-only, and discarded with the request. Nothing
   is written to disk, PostgreSQL or ChromaDB, and archive expansion is capped to resist zip bombs.
@@ -588,12 +749,16 @@ Troubleshooting:
   extracted attachment text. Do not upload confidential company records or instructions to a
   third-party AI service without authorization. The sample dataset is development data.
 
-## 14. Current limitations and planned features
+## 15. Current limitations and planned features
 
 Current limitations (verified against the code):
 
-- No incident create/update/delete API and no import endpoint. `seed_database.py` only inserts
-  missing records, so changing an existing record requires a manual SQL update or a fresh database.
+- No incident update or delete API. The import endpoint only inserts new closed incidents, never
+  changes an existing one, and `seed_database.py` only inserts missing records, so editing a record
+  still requires a manual SQL update.
+- No per-row import provenance beyond the response of the request that inserted the rows: the import
+  history is not stored, and the UI has no list of past imports.
+- The import dialog has no automated frontend tests; it is checked by hand against a mocked API.
 - No indexed SOP/manual knowledge base and no document management. Attachments are per-question
   context only, are not persisted, and are not searchable afterwards.
 - No OCR: scanned or image-only PDFs are rejected when no text can be extracted.
@@ -612,7 +777,8 @@ Current limitations (verified against the code):
 
 Planned features (not implemented yet):
 
-1. Incident management and validated import endpoints with provenance.
+1. Incident update/delete endpoints and per-row import provenance (who imported, when, which file
+   digest).
 2. Indexed SOPs and work instructions with versioning, provenance and permissions.
 3. Promotion of hybrid retrieval/reranking into production after evaluation, with quality gates in
    CI.

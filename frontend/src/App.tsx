@@ -5,6 +5,7 @@ import { Composer } from "./components/Composer";
 import { DropOverlay } from "./components/DropOverlay";
 import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
+import { ImportDialog } from "./components/ImportDialog";
 import { SourcesPanel } from "./components/SourcesPanel";
 import { useApiHealth } from "./hooks/useApiHealth";
 import { useAsk } from "./hooks/useAsk";
@@ -21,6 +22,9 @@ export default function App() {
 
   const [draft, setDraft] = useState("");
   const [machine, setMachine] = useState("");
+  // The import dialog is mounted only while open, so closing it discards the
+  // selected file, the preview and the result instead of leaving them behind.
+  const [importOpen, setImportOpen] = useState(false);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   // The transcript is the source of truth for the hero: as soon as a turn
@@ -75,70 +79,79 @@ export default function App() {
   }, [draft, submitQuestion]);
 
   return (
-    <div className="shell">
-      <div className="shell__glow" aria-hidden="true" />
+    <>
+      <div className="shell">
+        <div className="shell__glow" aria-hidden="true" />
 
-      <Header status={health.status} />
+        <Header
+          status={health.status}
+          onOpenImport={() => setImportOpen(true)}
+        />
 
-      <Hero
-        compact={hasStartedConversation}
-        showSuggestions={!hasStartedConversation}
-        onPick={handlePick}
-      />
+        <Hero
+          compact={hasStartedConversation}
+          showSuggestions={!hasStartedConversation}
+          onPick={handlePick}
+        />
 
-      <main className="workspace">
-        <section
-          className="panel"
-          aria-labelledby="panel-title"
-          {...dropZone.dragHandlers}
-        >
-          <div className="panel__head">
-            <div>
-              <h2 id="panel-title">Incident assistant</h2>
-              <p>Closed downtime records · every answer cites its evidence</p>
+        <main className="workspace">
+          <section
+            className="panel"
+            aria-labelledby="panel-title"
+            {...dropZone.dragHandlers}
+          >
+            <div className="panel__head">
+              <div>
+                <h2 id="panel-title">Incident assistant</h2>
+                <p>Closed downtime records · every answer cites its evidence</p>
+              </div>
+              <span className="panel__badge" aria-hidden="true">
+                RAG · grounded
+              </span>
             </div>
-            <span className="panel__badge" aria-hidden="true">
-              RAG · grounded
-            </span>
-          </div>
 
-          <ChatThread
-            turns={chat.turns}
-            pending={chat.isPending}
-            onRetry={chat.retry}
-          />
+            <ChatThread
+              turns={chat.turns}
+              pending={chat.isPending}
+              onRetry={chat.retry}
+            />
 
-          <Composer
-            value={draft}
-            onChange={setDraft}
-            machine={machine}
-            onMachineChange={setMachine}
-            attachments={selection.attachments}
-            onFilesSelected={selection.add}
-            onRemoveAttachment={selection.remove}
-            attachmentErrors={selection.errors}
-            onDismissAttachmentErrors={selection.dismissErrors}
-            onSubmit={handleSubmit}
-            pending={chat.isPending}
-            inputRef={inputRef}
-          />
+            <Composer
+              value={draft}
+              onChange={setDraft}
+              machine={machine}
+              onMachineChange={setMachine}
+              attachments={selection.attachments}
+              onFilesSelected={selection.add}
+              onRemoveAttachment={selection.remove}
+              attachmentErrors={selection.errors}
+              onDismissAttachmentErrors={selection.dismissErrors}
+              onSubmit={handleSubmit}
+              pending={chat.isPending}
+              inputRef={inputRef}
+            />
 
-          {dropZone.isDragging && <DropOverlay />}
-        </section>
+            {dropZone.isDragging && <DropOverlay />}
+          </section>
 
-        <aside className="rail" aria-label="Sources">
-          <SourcesPanel
-            sources={latestAnswer?.sources ?? []}
-            citedIds={latestAnswer?.cited_incident_ids ?? []}
-            idle={latestAnswer === null}
-          />
-        </aside>
-      </main>
+          <aside className="rail" aria-label="Sources">
+            <SourcesPanel
+              sources={latestAnswer?.sources ?? []}
+              citedIds={latestAnswer?.cited_incident_ids ?? []}
+              idle={latestAnswer === null}
+            />
+          </aside>
+        </main>
 
-      <footer className="footer">
-        <span>MachineCare AI · retrieval over historical downtime records</span>
-        <span>Recommendations are suggestions, not approved procedures.</span>
-      </footer>
-    </div>
+        <footer className="footer">
+          <span>MachineCare AI · retrieval over historical downtime records</span>
+          <span>Recommendations are suggestions, not approved procedures.</span>
+        </footer>
+      </div>
+
+      {/* Outside the shell: the shell is a clipped grid, and the dialog is
+          positioned against the viewport. */}
+      {importOpen && <ImportDialog onClose={() => setImportOpen(false)} />}
+    </>
   );
 }

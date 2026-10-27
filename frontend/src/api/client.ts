@@ -28,7 +28,9 @@ export class ApiError extends Error {
   }
 }
 
-async function fetchWithTimeout(
+// Shared with src/api/importClient.ts so every request in the app has the
+// same timeout, abort and error-mapping behaviour.
+export async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   timeoutMs: number,
@@ -61,7 +63,7 @@ async function fetchWithTimeout(
   }
 }
 
-function describeDetail(detail: unknown): string | null {
+export function describeDetail(detail: unknown): string | null {
   if (typeof detail === "string" && detail.trim()) {
     return detail.trim();
   }
@@ -84,7 +86,7 @@ function describeDetail(detail: unknown): string | null {
   return null;
 }
 
-function toNetworkError(error: unknown): ApiError {
+export function toNetworkError(error: unknown): ApiError {
   if (error instanceof ApiError) {
     return error;
   }
