@@ -3,99 +3,35 @@
  *
  * The browser always calls same-origin paths ("/api/v1/ask", "/health");
  * Vite proxies them to the FastAPI process on port 8001 (see vite.config.ts).
- * UI components never build URLs or touch fetch directly.
+ * UI components never build URLs or touch fetch directly. Ask requests
+ * carry the signed-in user's bearer token and, on a single 401, refresh
+ * the session once and retry (see src/api/authClient.ts).
  */
 
 import type { AskRequest, AskResponse, HealthResponse } from "../types";
+import { fetchWithAuth } from "./authClient";
+import {
+  ApiError,
+  describeDetail,
+  fetchWithTimeout,
+  toNetworkError,
+} from "./http";
+
+// Transport primitives live in ./http; these re-exports keep the rest of
+// the app (useAsk, useIncidentImport, importClient) on one import site.
+export {
+  ApiError,
+  describeDetail,
+  fetchWithTimeout,
+  toNetworkError,
+} from "./http";
+export type { ApiErrorKind } from "./http";
 
 const ASK_TIMEOUT_MS = 90_000;
 
 // Uploads are larger, so the document-aware call gets a longer budget.
 const UPLOAD_TIMEOUT_MS = 120_000;
 const HEALTH_TIMEOUT_MS = 5_000;
-
-export type ApiErrorKind = "network" | "timeout" | "http" | "invalid-response";
-
-export class ApiError extends Error {
-  readonly kind: ApiErrorKind;
-  readonly status?: number;
-
-  constructor(kind: ApiErrorKind, message: string, status?: number) {
-    super(message);
-    this.name = "ApiError";
-    this.kind = kind;
-    this.status = status;
-  }
-}
-
-// Shared with src/api/importClient.ts so every request in the app has the
-// same timeout, abort and error-mapping behaviour.
-export async function fetchWithTimeout(
-  url: string,
-  init: RequestInit,
-  timeoutMs: number,
-  signal?: AbortSignal,
-): Promise<Response> {
-  const controller = new AbortController();
-  let timedOut = false;
-
-  const timer = window.setTimeout(() => {
-    timedOut = true;
-    controller.abort();
-  }, timeoutMs);
-
-  const forwardAbort = () => controller.abort();
-  signal?.addEventListener("abort", forwardAbort);
-
-  try {
-    return await fetch(url, { ...init, signal: controller.signal });
-  } catch (error) {
-    if (timedOut) {
-      throw new ApiError(
-        "timeout",
-        "The request timed out. The retrieval service may be busy; try again.",
-      );
-    }
-    throw error;
-  } finally {
-    window.clearTimeout(timer);
-    signal?.removeEventListener("abort", forwardAbort);
-  }
-}
-
-export function describeDetail(detail: unknown): string | null {
-  if (typeof detail === "string" && detail.trim()) {
-    return detail.trim();
-  }
-
-  if (Array.isArray(detail)) {
-    const messages = detail
-      .map((item) => {
-        if (item && typeof item === "object" && "msg" in item) {
-          return String((item as { msg: unknown }).msg);
-        }
-        return null;
-      })
-      .filter((value): value is string => Boolean(value));
-
-    if (messages.length > 0) {
-      return messages.join(" ");
-    }
-  }
-
-  return null;
-}
-
-export function toNetworkError(error: unknown): ApiError {
-  if (error instanceof ApiError) {
-    return error;
-  }
-
-  return new ApiError(
-    "network",
-    "The RAG API could not be reached. Is it running on port 8001?",
-  );
-}
 
 /** GET /health — liveness of the API process only. */
 export async function checkHealth(signal?: AbortSignal): Promise<boolean> {
@@ -153,7 +89,7 @@ export async function askQuestion(
   let response: Response;
 
   try {
-    response = await fetchWithTimeout(
+    response = await fetchWithAuth(
       "/api/v1/ask",
       {
         method: "POST",
@@ -206,7 +142,7 @@ export async function askQuestionWithFiles(
   let response: Response;
 
   try {
-    response = await fetchWithTimeout(
+    response = await fetchWithAuth(
       "/api/v1/ask-with-files",
       {
         method: "POST",

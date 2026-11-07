@@ -26,10 +26,10 @@ import {
 import {
   ApiError,
   describeDetail,
-  fetchWithTimeout,
   toNetworkError,
   type ApiErrorKind,
-} from "./client";
+} from "./http";
+import { fetchWithAuth } from "./authClient";
 
 const PREVIEW_TIMEOUT_MS = 60_000;
 const COMMIT_TIMEOUT_MS = 120_000;
@@ -94,7 +94,10 @@ async function request(
   signal?: AbortSignal,
 ): Promise<Response> {
   try {
-    return await fetchWithTimeout(url, init, timeoutMs, signal);
+    // fetchWithAuth attaches the bearer token; its single automatic
+    // retry re-authenticates a 401, which can never have committed
+    // anything, so the no-retry rule for imports still holds.
+    return await fetchWithAuth(url, init, timeoutMs, signal);
   } catch (error) {
     // No response headers arrived: either the timeout fired or the request
     // never reached the API. fetchWithTimeout's message is retrieval-specific,

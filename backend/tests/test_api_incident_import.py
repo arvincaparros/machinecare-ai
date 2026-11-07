@@ -174,6 +174,27 @@ def select_statements(statements) -> list[str]:
     ]
 
 
+# Tables that make up the incident data. Read-only import paths must
+# never touch them; the only other statements a signed-in request may
+# produce are the per-request authentication lookups against the
+# users/roles tables.
+INCIDENT_TABLES = (
+    "downtime_incidents",
+    "downtime_resolutions",
+    "machines",
+)
+
+
+def incident_table_statements(statements) -> list[str]:
+    """Return the recorded statements touching incident data."""
+
+    return [
+        statement
+        for statement in statements
+        if any(table in statement.lower() for table in INCIDENT_TABLES)
+    ]
+
+
 # ---------------------------------------------------------------------
 # Fixtures
 # ---------------------------------------------------------------------
@@ -221,12 +242,15 @@ def sql_statements(import_session):
 
 
 @pytest.fixture
-def client(import_session):
-    """Provide a test client bound to the isolated database."""
+def client(import_session, admin_token, api_db):
+    """Provide a client signed in as an admin and bound to the isolated
+    database; the import routes require the incidents:import permission.
+    ``api_db`` routes the token lookup to the isolated database too."""
 
     app.dependency_overrides[get_db_session] = lambda: import_session
 
     with TestClient(app) as test_client:
+        test_client.headers.update({"Authorization": admin_token})
         yield test_client
 
     app.dependency_overrides.clear()
@@ -327,7 +351,10 @@ def test_template_download_does_not_query_the_database(
     client.get(TEMPLATE_URL)
     client.get(TEMPLATE_URL, params={"format": "csv"})
 
-    assert sql_statements == []
+    # Beyond the per-request authentication lookups (users and roles),
+    # serving the template reads nothing and writes nothing.
+    assert write_statements(sql_statements) == []
+    assert incident_table_statements(sql_statements) == []
 
 
 # ---------------------------------------------------------------------
@@ -744,7 +771,10 @@ def test_a_file_with_only_invalid_rows_does_not_query_the_database(
 
     assert body["invalid_rows"] == 1
     assert body["errors"][0]["code"] == "invalid_status"
-    assert sql_statements == []
+    # The parser rejects the file before any incident data is read or
+    # written; only the authentication lookups ran.
+    assert write_statements(sql_statements) == []
+    assert incident_table_statements(sql_statements) == []
 
 
 # ---------------------------------------------------------------------

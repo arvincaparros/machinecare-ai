@@ -1,11 +1,13 @@
 import { useCallback, useMemo, useRef, useState } from "react";
 
+import { useAuth } from "./auth/AuthProvider";
 import { ChatThread } from "./components/ChatThread";
 import { Composer } from "./components/Composer";
 import { DropOverlay } from "./components/DropOverlay";
 import { Header } from "./components/Header";
 import { Hero } from "./components/Hero";
 import { ImportDialog } from "./components/ImportDialog";
+import { LoginPage } from "./components/LoginPage";
 import { SourcesPanel } from "./components/SourcesPanel";
 import { useApiHealth } from "./hooks/useApiHealth";
 import { useAsk } from "./hooks/useAsk";
@@ -13,6 +15,7 @@ import { useAttachments } from "./hooks/useAttachments";
 import { useFileDrop } from "./hooks/useFileDrop";
 
 export default function App() {
+  const auth = useAuth();
   const health = useApiHealth();
   const chat = useAsk({ onNetworkFailure: health.markOffline });
   const selection = useAttachments();
@@ -78,6 +81,21 @@ export default function App() {
     submitQuestion(draft);
   }, [draft, submitQuestion]);
 
+  // Boot: hold everything until the session probe has finished.
+  if (auth.status === "loading") {
+    return (
+      <main className="boot" aria-busy="true">
+        <p>Checking your session…</p>
+      </main>
+    );
+  }
+
+  // Signed out: the login screen. The API enforces authentication and
+  // permissions independently of what this UI chooses to render.
+  if (auth.status === "anonymous") {
+    return <LoginPage />;
+  }
+
   return (
     <>
       <div className="shell">
@@ -85,6 +103,9 @@ export default function App() {
 
         <Header
           status={health.status}
+          user={auth.user}
+          canImport={auth.can("incidents:import")}
+          onSignOut={() => void auth.signOut()}
           onOpenImport={() => setImportOpen(true)}
         />
 

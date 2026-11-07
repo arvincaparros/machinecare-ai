@@ -21,6 +21,14 @@ python-dotenv>=1,<2
 # Request and response schemas
 pydantic>=2,<3
 
+# Typed settings for the authentication layer (JWT secrets and token
+# lifetimes); read lazily so /health keeps working without them
+pydantic-settings>=2,<3
+
+# Authentication: Argon2id password hashing and HS256 access tokens
+pwdlib[argon2]>=0.3,<1
+pyjwt>=2.8,<3
+
 # Multipart form parsing for the upload endpoint (required by fastapi's
 # Form/File parameters)
 python-multipart>=0.0.9,<1

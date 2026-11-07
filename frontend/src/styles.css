@@ -2651,6 +2651,203 @@ button {
 }
 
 /* ------------------------------------------------------------
+   Authentication (login screen, boot state, session identity)
+   ------------------------------------------------------------ */
+
+.boot {
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.login {
+  position: relative;
+  z-index: 0;
+  display: grid;
+  place-items: center;
+  min-height: 100dvh;
+  padding: 24px;
+}
+
+.login__card {
+  width: min(400px, 100%);
+  padding: 32px 34px 26px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow-panel);
+}
+
+.login__card .brand {
+  margin-bottom: 26px;
+}
+
+.login__title {
+  color: var(--text);
+  font-size: 1.45rem;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+}
+
+.login__subtitle {
+  margin-top: 6px;
+  color: var(--text-dim);
+  font-size: 0.9rem;
+}
+
+.login__banner {
+  margin-top: 16px;
+  padding: 10px 13px;
+  border-radius: var(--radius-sm);
+  font-size: 0.82rem;
+}
+
+.login__banner--error {
+  color: var(--red);
+  background: rgba(244, 112, 112, 0.09);
+  border: 1px solid rgba(244, 112, 112, 0.3);
+}
+
+.login__banner--notice {
+  color: var(--amber);
+  background: rgba(246, 197, 107, 0.09);
+  border: 1px solid rgba(246, 197, 107, 0.3);
+}
+
+.login__form {
+  display: grid;
+  gap: 14px;
+  margin-top: 22px;
+}
+
+.login__field {
+  display: grid;
+  gap: 6px;
+}
+
+.login__field label {
+  color: var(--text-faint);
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.login__field input {
+  padding: 11px 13px;
+  color: var(--text);
+  background: var(--surface-sunken);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-sm);
+  font-family: inherit;
+  font-size: 0.94rem;
+  transition: border-color 0.18s ease, background-color 0.18s ease;
+}
+
+.login__field input:hover:not(:disabled) {
+  border-color: rgba(255, 255, 255, 0.2);
+}
+
+.login__field input:focus {
+  outline: none;
+  border-color: rgba(255, 122, 24, 0.55);
+  background: rgba(255, 122, 24, 0.04);
+}
+
+.login__field input:disabled {
+  opacity: 0.55;
+}
+
+.login__submit {
+  margin-top: 4px;
+  padding: 11px 20px;
+  color: #fff;
+  background: linear-gradient(180deg, #ff8b2c, var(--orange-deep));
+  border: 1px solid rgba(255, 160, 74, 0.5);
+  border-radius: 11px;
+  font-family: inherit;
+  font-size: 0.92rem;
+  font-weight: 600;
+  cursor: pointer;
+  box-shadow: var(--shadow-ask);
+  transition: filter 0.18s ease, transform 0.18s ease;
+}
+
+.login__submit:hover:not(:disabled) {
+  filter: brightness(1.07);
+  transform: translateY(-1px);
+}
+
+.login__submit:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+.login__submit:disabled {
+  cursor: not-allowed;
+  opacity: 0.55;
+  box-shadow: none;
+}
+
+.login__foot {
+  margin-top: 18px;
+  color: var(--text-faint);
+  font-size: 0.75rem;
+  line-height: 1.5;
+}
+
+/* Header identity: who is signed in, and the way back out. */
+
+.header__user {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-end;
+  gap: 1px;
+  min-width: 0;
+  line-height: 1.25;
+}
+
+.header__user-name {
+  max-width: 200px;
+  overflow: hidden;
+  color: var(--text);
+  font-size: 0.79rem;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.header__user-role {
+  color: var(--text-faint);
+  font-size: 0.66rem;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  white-space: nowrap;
+}
+
+.header__signout {
+  padding: 7px 12px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  font-family: inherit;
+  font-size: 0.775rem;
+  font-weight: 500;
+  white-space: nowrap;
+  cursor: pointer;
+  transition: color 0.18s ease, border-color 0.18s ease,
+    background-color 0.18s ease;
+}
+
+.header__signout:hover {
+  color: var(--red);
+  border-color: rgba(244, 112, 112, 0.4);
+  background: rgba(244, 112, 112, 0.08);
+}
+
+/* ------------------------------------------------------------
    Motion
    ------------------------------------------------------------ */
 

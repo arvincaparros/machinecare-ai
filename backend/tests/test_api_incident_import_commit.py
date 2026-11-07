@@ -237,13 +237,20 @@ def indexer(db_session_factory):
 
 
 @pytest.fixture
-def import_client(session, indexer, sql_statements):
-    """Provide a client wired to the isolated database and the stub."""
+def import_client(
+    session, indexer, admin_token, api_db, sql_statements
+):
+    """Provide a client signed in as an admin, wired to the isolated
+    database and the stub. ``api_db`` routes the token lookup to the
+    isolated database too. The admin user is created before the
+    ``sql_statements`` recorder attaches, so it only captures what the
+    request itself sends."""
 
     app.dependency_overrides[get_db_session] = lambda: session
     app.dependency_overrides[get_index_service] = lambda: indexer
 
     with TestClient(app) as client:
+        client.headers.update({"Authorization": admin_token})
         yield ImportClient(client, session, indexer, sql_statements)
 
     app.dependency_overrides.clear()

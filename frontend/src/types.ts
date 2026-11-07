@@ -1,6 +1,7 @@
 /**
- * Types mirroring backend/app/api/schemas.py and
- * backend/app/api/incident_import_schemas.py.
+ * Types mirroring backend/app/api/schemas.py,
+ * backend/app/api/incident_import_schemas.py and
+ * backend/app/schemas/auth.py.
  *
  * Keep these in sync with the FastAPI models: AskResponse is returned by
  * POST /api/v1/ask, AskResponse with `documents` by
@@ -179,3 +180,35 @@ export const MAX_IMPORT_BYTES = 5 * 1024 * 1024;
 export const MAX_IMPORT_ROWS = 5000;
 export const IMPORT_ACCEPTED_EXTENSIONS = [".csv", ".xlsx"] as const;
 export const IMPORT_ACCEPTED_FORMATS_LABEL = "CSV or XLSX";
+
+/* ------------------------------------------------------------------
+   Authentication (backend/app/schemas/auth.py)
+   ------------------------------------------------------------------ */
+
+/**
+ * POST /api/v1/auth/login and POST /api/v1/auth/refresh.
+ *
+ * The refresh token is never in this body: it travels only in the
+ * HttpOnly cookie.
+ */
+export interface TokenResponse {
+  access_token: string;
+  token_type: string;
+  /** Seconds until the access token expires. */
+  expires_in: number;
+}
+
+/** GET /api/v1/auth/me — the current principal and its permissions. */
+export interface MeResponse {
+  user_id: number;
+  username: string;
+  display_name: string;
+  roles: string[];
+  permissions: string[];
+}
+
+/** Body of the logout and password acknowledgement endpoints. */
+export interface MessageResponse {
+  status: string;
+  message: string;
+}

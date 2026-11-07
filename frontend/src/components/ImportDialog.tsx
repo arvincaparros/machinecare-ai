@@ -542,10 +542,11 @@ export function ImportDialog({ onClose }: { onClose: () => void }) {
           </p>
 
           <p className="import-notice">
-            <strong>Local development only.</strong> The import endpoints have no
-            authentication or authorisation, so anyone who can reach the API can
-            write to the incident database. Do not expose this app on a shared or
-            public network.
+            <strong>Local development only.</strong> Importing requires the
+            maintenance-engineer or admin role; the API rejects every other
+            account regardless of what this dialog shows. There is still no TLS
+            or rate limiting, so do not expose this app on a shared or public
+            network.
           </p>
 
           {state.commitResult ? (

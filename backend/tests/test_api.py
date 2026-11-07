@@ -36,10 +36,11 @@ FALLBACK_RESPONSE = {
 
 
 @pytest.fixture
-def client():
-    """Provide a test client and always discard overrides afterwards."""
+def client(auth_client):
+    """Provide a client signed in as an admin — the ask routes require a
+    valid login — and always discard overrides afterwards."""
 
-    with TestClient(app) as test_client:
+    with auth_client() as test_client:
         yield test_client
 
     app.dependency_overrides.clear()

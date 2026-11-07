@@ -5,11 +5,11 @@ records behind every claim. A React chat UI talks to a FastAPI retrieval-augment
 (RAG) service: PostgreSQL holds the authoritative incident records, ChromaDB narrows candidates
 by semantic similarity, and Groq generates the answer from the retrieved evidence only.
 
-This is a working local development stack, not a hardened production service. There is no
-authentication, the conversation lives only in the browser tab, and attachments are per-question
-context rather than an indexed document library. The incident import writes to PostgreSQL through
-unauthenticated endpoints, so keep the stack on a local machine. See
-[section 15](#15-current-limitations-and-planned-features).
+This is a working local development stack, not a hardened production service. Sign-in with
+role-based access control now guards every data endpoint (section 7), while the conversation
+still lives only in the browser tab and attachments are per-question context rather than an
+indexed document library. There is still no TLS or rate limiting, so keep the stack on a local
+machine. See [section 15](#15-current-limitations-and-planned-features).
 
 ## 1. Project overview and current capabilities
 
@@ -32,10 +32,15 @@ What works today:
   error retry, and a liveness indicator.
 - **Two FastAPI applications**: the RAG API the frontend uses, plus the standalone Phase 1
   database-only record API for inspecting the original incident table.
+- **Accounts and roles**: administrator-provisioned sign-in with Argon2id password hashes,
+  short-lived JWT access tokens and rotating HttpOnly refresh cookies (replaying a rotated-away
+  cookie revokes the whole session family), three roles enforced by FastAPI dependencies on every
+  data endpoint, login lockout, and an append-only audit log of security events.
 
 What does **not** exist yet: incident update/delete endpoints, per-row import provenance, indexed
-SOP/document management, permissions or authentication, MCP tools, streaming, and persisted chat
-history. Those are listed as planned work in section 15.
+SOP/document management, self-service registration or email-based password reset, TLS and rate
+limiting, MCP tools, streaming, and persisted chat history. Those are listed as planned work in
+section 15.
 
 ## 2. Architecture and data flow
 
@@ -84,14 +89,22 @@ machinecare-ai-starter/
 │  ├─ app/
 │  │  ├─ api/
 │  │  │  ├─ main.py          RAG FastAPI app (used by the frontend)
+│  │  │  ├─ auth.py          Login, refresh, logout, me and password routes
+│  │  │  ├─ admin_users.py   Admin account management routes
 │  │  │  ├─ incident_import.py          Template, machines, preview, commit and reindex routes
 │  │  │  ├─ incident_import_schemas.py  Import request/response models
 │  │  │  └─ schemas.py       Pydantic request/response models and limits
+│  │  ├─ core/               Settings, Argon2id/JWT helpers, permissions, password policy
+│  │  ├─ dependencies/auth.py  Bearer authentication and permission dependencies
 │  │  ├─ main.py             Phase 1 database-only FastAPI app (separate)
 │  │  ├─ db/database.py      Engine and session factory from DB_* variables
-│  │  ├─ models/             Machine, DowntimeIncident, DowntimeResolution
+│  │  ├─ models/             Machine, DowntimeIncident, DowntimeResolution, User, Role, sessions
 │  │  ├─ repositories/       Queries for closed incidents and lookups by ID
+│  │  ├─ scripts/create_admin.py  Bootstrap administrator CLI
 │  │  └─ services/
+│  │     ├─ auth_service.py            Login, sessions, refresh rotation, password flows
+│  │     ├─ user_admin_service.py      Admin account management
+│  │     ├─ audit_service.py           Append-only security audit trail
 │  │     ├─ rag_service.py             Retrieval, prompt building, citation checks
 │  │     ├─ vector_store_service.py    ChromaDB indexing and search
 │  │     ├─ groq_service.py            Groq chat completion call
@@ -136,9 +149,10 @@ for that application and is git-ignored.
 | --- | --- |
 | Backend API | FastAPI, uvicorn (`uvicorn[standard]`), Pydantic 2 |
 | Persistence | PostgreSQL 17, SQLAlchemy 2.1 ORM, psycopg 3 (`postgresql+psycopg`) |
-| Migrations | Alembic (one revision, `6041a26eff31`) |
+| Migrations | Alembic (`6041a26eff31`, then `e5a7c1f90b34` users/roles/sessions, `b2d4f6a80c15` audit log) |
 | Vector store | ChromaDB 1.5, persistent client, cosine space, default ONNX all-MiniLM-L6-v2 embeddings |
 | Generation | Groq chat completions, default model `openai/gpt-oss-20b`, temperature `0.2` |
+| Authentication | pwdlib Argon2id password hashing, PyJWT HS256 access tokens, rotating refresh sessions |
 | Text extraction | pypdf (PDF), openpyxl (`.xlsx`), xlrd (`.xls`), standard library zipfile/XML (DOCX), standard library text/CSV |
 | Frontend | React 19, TypeScript 5.8, Vite 7, react-markdown 10 with remark-gfm |
 | Tests | pytest with FastAPI `TestClient`, in-memory SQLite fixtures |
@@ -156,8 +170,8 @@ Prerequisites:
 - A Groq API key and internet access. The key is required for answering; the first ChromaDB
   embedding call also downloads the ONNX MiniLM model (~80 MB) once.
 
-Create `.env` in the repository root with these variables. It is git-ignored and no template is
-committed, so create it by hand and never commit it:
+Create `.env` in the repository root with these variables (`.env.example` in the repository root
+shows the same keys with placeholders). `.env` is git-ignored; never commit it:
 
 ```dotenv
 # PostgreSQL: compose.yaml requires POSTGRES_PASSWORD; the backend reads DB_*
@@ -171,6 +185,13 @@ DB_NAME=machinecare_db
 # Groq: required for answer generation
 GROQ_API_KEY=replace-with-your-groq-api-key
 GROQ_MODEL=openai/gpt-oss-20b
+
+# Authentication: required for login and every protected endpoint.
+# Generate a value with:
+#   python -c "import secrets; print(secrets.token_urlsafe(48))"
+JWT_SECRET=replace-with-a-long-random-value
+# Mark the refresh cookie Secure; keep false for plain-HTTP localhost.
+COOKIE_SECURE=false
 ```
 
 Notes:
@@ -181,6 +202,9 @@ Notes:
 - `DB_USER`, `DB_PASSWORD` and `DB_NAME` are required; `app/db/database.py` raises `KeyError` at
   import time when they are missing. `DB_HOST` defaults to `127.0.0.1` and `DB_PORT` to `5434`.
 - `GROQ_MODEL` is optional; `openai/gpt-oss-20b` is the default in `groq_service.py`.
+- `JWT_SECRET` is required for sign-in (section 7); a missing value surfaces as a clear error on
+  the first login attempt rather than at startup. `COOKIE_SECURE` defaults to `true` and must stay
+  `false` for plain-HTTP local development.
 - `app/main.py` (the Phase 1 app) optionally reads `DATABASE_URL`. The RAG API never reads it.
 - pytest does not need a running database, a vector index or a Groq key: `tests/conftest.py` pins
   dummy `DB_*` values, and tests use in-memory SQLite with mocked retrieval and generation.
@@ -221,6 +245,16 @@ cd C:\Projects\machinecare-ai-starter\backend
 ..\.venv\Scripts\python.exe index_incidents.py
 ```
 
+Create the first administrator (sign-in has no self-service registration; the password is prompted
+on the terminal, or read from `ADMIN_PASSWORD`, and is never an argv value):
+
+```powershell
+cd C:\Projects\machinecare-ai-starter\backend
+..\.venv\Scripts\python.exe -m app.scripts.create_admin --username admin --display-name "Administrator"
+```
+
+Additional accounts are created by a signed-in admin through `POST /api/v1/admin/users` (section 7).
+
 Start the RAG API on port **8001** (the port the frontend proxies to):
 
 ```powershell
@@ -236,7 +270,8 @@ npm install
 npm run dev
 ```
 
-Open http://localhost:5173. The header pill reads "RAG API connected" when `GET /health` (proxied
+Open http://localhost:5173 and sign in with an administrator-provisioned account. The header pill
+reads "RAG API connected" when `GET /health` (proxied
 to the RAG API) answers; it only proves the API process is running, not that PostgreSQL, ChromaDB
 or Groq are ready.
 
@@ -245,7 +280,9 @@ Answering a question requires:
 1. a running RAG API on port 8001,
 2. PostgreSQL with the seeded records (`seed_database.py`),
 3. a non-empty ChromaDB index built from those records (`index_incidents.py`),
-4. a valid `GROQ_API_KEY` with network access.
+4. a valid `GROQ_API_KEY` with network access,
+5. a signed-in account: every role can ask questions; importing needs the maintenance-engineer or
+   admin role (section 7).
 
 ## 7. Backend API applications and endpoints
 
@@ -265,6 +302,12 @@ the RAG API uses the `DB_*` variables, while the Phase 1 app uses `DATABASE_URL`
 | POST | `/api/v1/ask` | JSON `{"question": str, "machine": str \| null}` | `AskResponse` |
 | POST | `/api/v1/ask-with-files` | multipart `question`, optional `machine`, 1–3 `files` | `AskWithFilesResponse` |
 | GET | `/docs`, `/openapi.json` | none | Interactive docs and schema |
+
+Every `/api/v1` route requires a signed-in user: the ask endpoints need `assistant:use`, and the
+import endpoints below need `incidents:import` or `index:run`. Requests without a valid token get
+`401` with `WWW-Authenticate: Bearer`; signed-in users without the permission get `403`. The
+frontend attaches the token and silently refreshes an expired one, but the API never relies on the
+frontend for enforcement.
 
 `AskResponse` fields:
 
@@ -332,8 +375,44 @@ the size of the whole ChromaDB collection after a refresh, not the number of row
 | 500 | the database write failed; nothing is written |
 | 503 | a reindex attempt failed; rows committed by an earlier import stay in place |
 
-These endpoints have **no authentication or authorisation** and are the only write path into
-PostgreSQL. They exist for local development; section 11 describes the UI workflow.
+These endpoints require authentication plus the `incidents:import` permission (reindex:
+`index:run`) and are the only write path into PostgreSQL. Section 11 describes the UI workflow.
+
+### Authentication and admin endpoints (Phase 1)
+
+Sign-in is administrator-provisioned only. `POST /api/v1/auth/login` returns the access token in
+the body and sets the refresh token as an HttpOnly `SameSite=strict` cookie scoped to
+`/api/v1/auth`; the cookie is rotated on every refresh, and replaying a rotated-away cookie
+revokes the whole session family.
+
+| Method | Path | Access | Purpose |
+| --- | --- | --- | --- |
+| POST | `/api/v1/auth/login` | public | Verify credentials; access token in the body, refresh cookie set |
+| POST | `/api/v1/auth/refresh` | refresh cookie | Rotate the session, return a fresh access token |
+| POST | `/api/v1/auth/logout` | bearer token | Revoke the session named by the cookie and clear it |
+| GET | `/api/v1/auth/me` | bearer token | The signed-in user with roles and effective permissions |
+| POST | `/api/v1/auth/change-password` | bearer token | Set a new password; revokes all of the user's sessions |
+| POST | `/api/v1/auth/reset-password` | one-time token | Consume an admin-issued reset token and set a new password |
+| GET | `/api/v1/admin/users` | `users:manage` | List accounts |
+| POST | `/api/v1/admin/users` | `users:manage` | Create an account (username, display name, role, initial password) |
+| PATCH | `/api/v1/admin/users/{user_id}` | `users:manage` | Update display name, role or active flag |
+| POST | `/api/v1/admin/users/{user_id}/reset-password` | `users:manage` | Issue a one-time reset token (shown once) |
+| POST | `/api/v1/admin/users/{user_id}/disable` | `users:manage` | Disable the account and kill its sessions and tokens |
+| GET | `/api/v1/admin/roles` | `users:manage` | The three fixed roles |
+
+Roles and permissions are defined once in `backend/app/core/permissions.py` and enforced by the
+backend on every request:
+
+| Permission | Admin | Maintenance engineer | Viewer |
+| --- | --- | --- | --- |
+| `assistant:use` — ask endpoints | yes | yes | yes |
+| `incidents:read` — read incident data | yes | yes | yes |
+| `incidents:import` — import template, machines, preview, commit | yes | yes | no |
+| `index:run` — reindex | yes | no | no |
+| `users:manage` — account management | yes | no | no |
+| `incidents:write` / `incidents:delete` / `audit:read` | yes (reserved) | no | no |
+
+The last row's permissions are reserved for future endpoints; no route uses them yet.
 
 ### Phase 1 record API (`backend/app/main.py`)
 
@@ -501,9 +580,9 @@ API client (`frontend/src/api/importClient.ts`) and state machine
 (`frontend/src/hooks/useIncidentImport.ts`), and closing the dialog discards the chosen file, the
 check result and the outcome.
 
-**Local development only.** The import endpoints have no authentication or authorisation, so anyone
-who can reach the RAG API can write to the incident database. The dialog states this before the first
-action. Do not expose the stack on a shared or public network (section 14).
+The import endpoints require the `incidents:import` permission (admin or maintenance engineer),
+and the dialog only appears for users holding it; the API remains the authority. There is still no
+TLS or rate limiting, so do not expose the stack on a shared or public network (section 14).
 
 ### File format and limits
 
@@ -663,7 +742,7 @@ cd C:\Projects\machinecare-ai-starter\backend
 ..\.venv\Scripts\python.exe -m pytest
 ```
 
-The current suite reports **409 passed, 3 skipped** (one Starlette deprecation warning). The three
+The current suite reports **512 passed, 3 skipped** (one Starlette deprecation warning). The three
 skipped tests are the import concurrency tests in `tests/test_import_concurrency_postgres.py`, which
 need a disposable PostgreSQL database: they run only when `IMPORT_TEST_POSTGRES_URL` is set, and
 refuse any database whose name does not contain `import_test`. Run pytest from `backend/`;
@@ -725,14 +804,25 @@ Troubleshooting:
 - **Secrets.** API keys and database credentials live only in the git-ignored root `.env`. They are
   never sent to the browser, and the frontend has no configuration file containing them. Do not
   commit `.env` or paste its values into logs, screenshots or issues.
+- **Authentication.** Every `/api/v1` route requires a bearer access token (15-minute JWT, HS256)
+  or, for refresh, the HttpOnly `SameSite=strict` refresh cookie scoped to `/api/v1/auth`.
+  Passwords are hashed with Argon2id and never logged; refresh tokens are stored only as SHA-256
+  digests and are rotated on every use — replaying an old one revokes the whole session family.
+  Five failed logins lock the account with exponential backoff (60 s base, 900 s cap), and failed
+  and successful logins, lockouts, logouts, password changes, reset-token issues and reuse
+  detections are written to an append-only audit table that stores no passwords or tokens.
+- **Authorization.** Permissions are code constants resolved from three fixed roles
+  (`backend/app/core/permissions.py`): the admin holds all of them, the maintenance engineer may
+  use the assistant and run imports, and the viewer may use the assistant and read answers. Checks
+  run server-side through FastAPI dependencies; the frontend only hides what a user may not do.
 - **Network exposure.** PostgreSQL is published on `127.0.0.1:5434` only. ChromaDB is a local
-  directory, not a service. There is no TLS, authentication, authorization or rate limiting on
-  either FastAPI app, so treat the stack as local-development only and put it behind an
-  authenticating reverse proxy before sharing it.
+  directory, not a service. There is still no TLS or rate limiting on either FastAPI app, so treat
+  the stack as local-development only and put it behind a TLS-terminating reverse proxy before
+  sharing it.
 - **Import endpoints.** `/api/v1/incidents/import/preview`, `/api/v1/incidents/import` and
-  `/api/v1/incidents/import/reindex` have no authentication or authorisation, and the commit writes
-  to PostgreSQL. Anyone who can reach the RAG API can insert incidents and trigger a full reindex of
-  the vector collection. The dialog carries the same warning; keep the API on a local machine.
+  `/api/v1/incidents/import/reindex` require `incidents:import` / `index:run`, but the commit
+  still writes to PostgreSQL: keep membership in the importing roles deliberate and the API on a
+  local machine.
 - **Uploads.** Files are read into memory in 64 KB chunks with an early size rejection, validated by
   extension, declared type and signature, parsed read-only, and discarded with the request. Nothing
   is written to disk, PostgreSQL or ChromaDB, and archive expansion is capped to resist zip bombs.
@@ -762,7 +852,8 @@ Current limitations (verified against the code):
 - No indexed SOP/manual knowledge base and no document management. Attachments are per-question
   context only, are not persisted, and are not searchable afterwards.
 - No OCR: scanned or image-only PDFs are rejected when no text can be extracted.
-- No authentication, roles, permissions, audit trail, TLS or rate limiting.
+- No TLS, rate limiting or MFA; the audit trail is write-only (the auth flows record events, and
+  there is no reader UI or API for it yet).
 - No streaming responses, no cancel button, one in-flight question at a time.
 - No persisted conversations and no multi-turn context: a follow-up is retrieved and answered from
   its own text only, and a refresh clears the thread.
@@ -783,6 +874,6 @@ Planned features (not implemented yet):
 3. Promotion of hybrid retrieval/reranking into production after evaluation, with quality gates in
    CI.
 4. Persisted conversations and streaming answers.
-5. Authentication, roles and audit logging.
+5. MFA for admin accounts, TLS/reverse-proxy deployment, and a reader for the audit log.
 6. MCP read-only tools exposing approved queries.
 7. Containerized deployment for both APIs and the built frontend.

@@ -29,9 +29,10 @@ are imported inside the functions below, so starting this process or
 answering ``/health`` still needs neither database settings nor a vector
 store.
 
-Local development only: there is no authentication or authorisation yet,
-so the write endpoints are unauthenticated and must not be exposed as
-they are, with or without a network in front of them.
+Every route requires an authenticated principal with the plan's
+permission for it (``incidents:import`` for the template, machines
+lookup, preview and commit; ``index:run`` for the full reindex),
+enforced server-side by the dependencies in ``app.dependencies.auth``.
 """
 
 from __future__ import annotations
@@ -63,6 +64,16 @@ from app.api.incident_import_schemas import (
     MachineInfo,
     MachineListResponse,
     ReindexResponse,
+)
+from app.core.permissions import (
+    INCIDENTS_IMPORT,
+    INCIDENTS_READ,
+    INDEX_RUN,
+)
+from app.dependencies.auth import (
+    Principal,
+    require_any_permission,
+    require_permission,
 )
 from app.services.incident_import_digest import (
     digest_matches,
@@ -209,6 +220,9 @@ def _database_import_facts(
 @router.get("/template.xlsx")
 def download_import_template(
     template_format: Annotated[str, Query(alias="format")] = "xlsx",
+    principal: Principal = Depends(
+        require_permission(INCIDENTS_IMPORT)
+    ),
 ) -> Response:
     """Download the import template as XLSX or CSV."""
 
@@ -242,6 +256,9 @@ def download_import_template(
 @router.get("/machines", response_model=MachineListResponse)
 def list_machines(
     db: Session = Depends(get_db_session),
+    principal: Principal = Depends(
+        require_any_permission(INCIDENTS_READ, INCIDENTS_IMPORT)
+    ),
 ) -> MachineListResponse:
     """List the machine codes an import row may reference."""
 
@@ -350,6 +367,9 @@ def preview_import(
     ],
     skip_existing: Annotated[bool, Form()] = False,
     db: Session = Depends(get_db_session),
+    principal: Principal = Depends(
+        require_permission(INCIDENTS_IMPORT)
+    ),
 ) -> ImportPreviewResponse:
     """Check an upload against the schema and the database, read-only.
 
@@ -486,6 +506,9 @@ def import_incidents(
     skip_existing: Annotated[bool, Form()] = False,
     db: Session = Depends(get_db_session),
     indexer: Callable[[], int] = Depends(get_index_service),
+    principal: Principal = Depends(
+        require_permission(INCIDENTS_IMPORT)
+    ),
 ) -> ImportCommitResponse | Response:
     """Import a previewed file in one transaction, then index it.
 
@@ -573,6 +596,7 @@ def import_incidents(
 )
 def reindex_incidents(
     indexer: Callable[[], int] = Depends(get_index_service),
+    principal: Principal = Depends(require_permission(INDEX_RUN)),
 ) -> ReindexResponse | Response:
     """Rebuild the search index from the committed incidents.
 

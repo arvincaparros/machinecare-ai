@@ -23,6 +23,8 @@ from fastapi import (
     UploadFile,
 )
 
+from app.api.admin_users import router as admin_users_router
+from app.api.auth import router as auth_router
 from app.api.incident_import import router as incident_import_router
 from app.api.schemas import (
     MAX_MACHINE_LENGTH,
@@ -33,6 +35,9 @@ from app.api.schemas import (
     DocumentInfo,
     HealthResponse,
 )
+from app.core.permissions import ASSISTANT_USE
+from app.dependencies.auth import Principal, require_permission
+from app.middleware.request_id import RequestIdMiddleware
 from app.services.document_extraction import (
     MAX_FILES,
     MAX_FILE_BYTES,
@@ -97,9 +102,18 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Every request carries a correlation id; audit rows reference it.
+app.add_middleware(RequestIdMiddleware)
+
 # Read-only incident import routes; the router keeps its own path prefix
-# and imports the database lazily.
+# and imports the database lazily. Each route is protected individually
+# because preview (read-only), commit (write) and reindex (admin) need
+# different permissions.
 app.include_router(incident_import_router)
+
+# Authentication and admin user management.
+app.include_router(auth_router)
+app.include_router(admin_users_router)
 
 
 @app.get("/health", response_model=HealthResponse)
@@ -117,6 +131,9 @@ def health() -> HealthResponse:
 def ask(
     request: AskRequest,
     service: AskService = Depends(get_ask_service),
+    principal: Principal = Depends(
+        require_permission(ASSISTANT_USE)
+    ),
 ) -> AskResponse:
     """Answer a maintenance question through the existing RAG service."""
 
@@ -179,6 +196,9 @@ def ask_with_files(
     ] = None,
     files: Annotated[list[UploadFile] | None, File()] = None,
     service: AskService = Depends(get_document_ask_service),
+    principal: Principal = Depends(
+        require_permission(ASSISTANT_USE)
+    ),
 ) -> AskWithFilesResponse:
     """Answer a question using uploaded documents and incident records.
 
